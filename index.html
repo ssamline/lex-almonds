@@ -311,10 +311,7 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
 </div>
 
 <script>
-// ─────────────────────────────────────────────────────────────────────────────
-// CONFIG  —  paste your Anthropic key between the quotes below
-// ─────────────────────────────────────────────────────────────────────────────
-const API_KEY = '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';
+// API calls are proxied through /api/chat on the server — no key needed here.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STATE
@@ -420,13 +417,6 @@ document.getElementById('url-in').addEventListener('keydown',e=>{ if(e.key==='En
 // GENERATE BRIEFING  (streaming)
 // ─────────────────────────────────────────────────────────────────────────────
 async function generateBriefing() {
-  if (!API_KEY || API_KEY === 'YOUR_API_KEY_HERE') {
-    document.getElementById('brief-empty').innerHTML =
-      '<div style="font-size:13px;color:#dc2626;font-family:Arial,sans-serif">⚠️ API key not set. Open this file in a text editor and replace <strong>YOUR_API_KEY_HERE</strong> with your Anthropic API key.</div>';
-    document.getElementById('brief-empty').style.display = 'block';
-    return;
-  }
-
   const activeTopics = Object.entries(S.topics).filter(([,v])=>v).map(([k])=>k);
   if (!activeTopics.length) {
     alert('Go to Sources & Topics and enable at least one Legal Topic first.');
@@ -460,14 +450,9 @@ Reply ONLY in valid JSON, no markdown fences:
 Only include these topics: ${activeTopics.join(',')}.`;
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch('/api/chat', {
       method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'x-api-key': API_KEY,
-        'anthropic-version':'2023-06-01',
-        'anthropic-dangerous-direct-browser-access':'true'
-      },
+      headers:{'Content-Type':'application/json'},
       body: JSON.stringify({
         model:'claude-haiku-4-5-20251001',
         max_tokens:1500,
@@ -619,7 +604,6 @@ function addMsg(role, text) {
 }
 
 async function sendMessage() {
-  if (!API_KEY || API_KEY === 'YOUR_API_KEY_HERE') { alert('API key not configured.'); return; }
   const inp = document.getElementById('chat-input');
   const q   = inp.value.trim(); if (!q) return;
   inp.value = '';
@@ -633,14 +617,9 @@ async function sendMessage() {
   const system = `You are a senior legal intelligence assistant. Answer questions about legal briefings with precision. Draw on the briefing context below. For archive briefings, refer to them by their date.${ctx}`;
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages',{
+    const res = await fetch('/api/chat',{
       method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'x-api-key':API_KEY,
-        'anthropic-version':'2023-06-01',
-        'anthropic-dangerous-direct-browser-access':'true'
-      },
+      headers:{'Content-Type':'application/json'},
       body:JSON.stringify({
         model:'claude-haiku-4-5-20251001',
         max_tokens:800,
