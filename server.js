@@ -29,6 +29,18 @@ app.post('/api/chat', (req, res) => {
 
   const apiReq = https.request(options, (apiRes) => {
     res.status(apiRes.statusCode);
+
+    // Always buffer error responses as JSON so the browser can read them
+    if (apiRes.statusCode !== 200) {
+      let data = '';
+      apiRes.on('data', chunk => { data += chunk; });
+      apiRes.on('end', () => {
+        res.setHeader('Content-Type', 'application/json');
+        res.send(data);
+      });
+      return;
+    }
+
     if (isStream) {
       res.setHeader('Content-Type', 'text/event-stream');
       apiRes.pipe(res);
