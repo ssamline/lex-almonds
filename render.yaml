@@ -1,6 +1,6 @@
 services:
   - type: web
     name: lexis-legal-intelligence
-    env: node
-    buildCommand: npm install
-    startCommand: npm start
+    env: static
+    buildCommand: ""
+    staticPublishPath: .
