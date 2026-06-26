@@ -179,7 +179,7 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
       <div class="card">
         <div class="card-head">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <span class="card-title">Morning Briefing</span>
+            <span class="card-title">Daily Briefing</span>
             <span id="brief-badge" class="badge" style="display:none">📌 Ready</span>
             <span id="brief-ts"   style="display:none;font-family:Arial,sans-serif;font-size:11px;color:var(--ink3)"></span>
             <span id="brief-spin" style="display:none;font-family:Arial,sans-serif;font-size:11px;color:var(--ink3)">
@@ -304,6 +304,22 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
         </div>
       </div>
 
+      <div class="card">
+        <div class="card-head"><span class="card-title">Daily Alarm</span></div>
+        <div class="card-body">
+          <p style="font-family:Arial,sans-serif;font-size:13px;color:var(--ink3);margin-bottom:14px">Auto-generate your Daily Briefing at a set time each day.</p>
+          <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+            <input type="time" id="alarm-time" value="08:00" onchange="saveAlarm()" style="font-size:14px;padding:7px 10px;border:1px solid var(--rule);border-radius:var(--radius);color:var(--ink);background:var(--white);font-family:Arial,sans-serif">
+            <label style="display:flex;align-items:center;gap:8px;font-family:Arial,sans-serif;font-size:13px;cursor:pointer">
+              <input type="checkbox" id="alarm-toggle" onchange="saveAlarm()" style="width:16px;height:16px;cursor:pointer">
+              Enable alarm
+            </label>
+            <button class="btn-ghost" id="notif-btn" onclick="requestNotifPermission()">🔔 Allow notifications</button>
+          </div>
+          <div id="alarm-status" style="font-family:Arial,sans-serif;font-size:12px;color:var(--ink3);margin-top:10px">Alarm disabled</div>
+        </div>
+      </div>
+
       <p style="font-family:Arial,sans-serif;font-size:12px;color:var(--ink3);text-align:center">Changes take effect on the next renewal.</p>
     </div>
 
@@ -352,6 +368,61 @@ try {
   if (saved) S.archive = JSON.parse(saved);
   renderArchive();
 } catch(e) {}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ALARM
+// ─────────────────────────────────────────────────────────────────────────────
+const ALARM = { enabled: false, time: '08:00' };
+
+function loadAlarm() {
+  try { const s = localStorage.getItem('lb_alarm'); if (s) Object.assign(ALARM, JSON.parse(s)); } catch(e) {}
+  document.getElementById('alarm-time').value     = ALARM.time;
+  document.getElementById('alarm-toggle').checked = ALARM.enabled;
+  updateAlarmStatus();
+  if ('Notification' in window && Notification.permission === 'granted')
+    document.getElementById('notif-btn').style.display = 'none';
+}
+
+function saveAlarm() {
+  ALARM.enabled = document.getElementById('alarm-toggle').checked;
+  ALARM.time    = document.getElementById('alarm-time').value;
+  try { localStorage.setItem('lb_alarm', JSON.stringify(ALARM)); } catch(e) {}
+  updateAlarmStatus();
+}
+
+function updateAlarmStatus() {
+  const el = document.getElementById('alarm-status');
+  if (ALARM.enabled && ALARM.time) {
+    const [h,m] = ALARM.time.split(':').map(Number);
+    const t = `${h%12||12}:${String(m).padStart(2,'0')} ${h>=12?'PM':'AM'}`;
+    el.textContent = `✓ Alarm set for ${t} daily`;
+    el.style.color = 'var(--accent)';
+  } else {
+    el.textContent = 'Alarm disabled';
+    el.style.color = 'var(--ink3)';
+  }
+}
+
+function requestNotifPermission() {
+  if ('Notification' in window)
+    Notification.requestPermission().then(p => {
+      if (p === 'granted') document.getElementById('notif-btn').style.display = 'none';
+    });
+}
+
+setInterval(() => {
+  if (!ALARM.enabled || !ALARM.time) return;
+  const now = new Date();
+  const [h,m] = ALARM.time.split(':').map(Number);
+  if (now.getHours() !== h || now.getMinutes() !== m) return;
+  const key = `lb_alarm_fired_${now.toDateString()}_${ALARM.time}`;
+  if (localStorage.getItem(key)) return;
+  localStorage.setItem(key, '1');
+  showPanel('brief', null);
+  generateBriefing();
+  if ('Notification' in window && Notification.permission === 'granted')
+    new Notification('LexBrief', { body: 'Your daily legal briefing is ready.' });
+}, 30000);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NAVIGATION  — simple, reliable tab switching
@@ -436,17 +507,17 @@ async function generateBriefing() {
   const kwExtra    = S.keywords.length ? ` Emphasize: ${S.keywords.join(', ')}.` : '';
   const today      = new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
 
-  let bizBlock = '';
+  let bizInstr = '';
   if (hasBiz) {
-    bizBlock = `\nAlso add a "biz" array of opportunities and risks drawn from today's legal news.`
-      + (activeSectors.length ? ` Sectors: ${activeSectors.join(', ')}.` : '')
-      + (S.companies.length   ? ` Companies: ${S.companies.join(', ')}.` : '')
-      + ` Each item: {type:"opportunity"|"risk",company:"or empty",sector:"or empty",text:"1-2 sentences"}. Min 2 opps + 2 risks.`;
+    bizInstr = ` For each section include a "biz" array of 1-2 opportunities and 1-2 risks directly tied to that section's legal developments.`
+      + (activeSectors.length ? ` Business sectors: ${activeSectors.join(', ')}.` : '')
+      + (S.companies.length   ? ` Tracked companies: ${S.companies.join(', ')}.` : '')
+      + ` Each biz item: {type:"opportunity"|"risk",company:"name or empty",sector:"name or empty",text:"1-2 sentences"}.`;
   }
 
-  const system = `You are a senior legal news analyst. Generate a concise morning legal briefing for ${today}. Sources: ${sources}. Topics: ${topicNames}.${kwExtra} Cite plausible cases and agencies. 2-3 bullets + 1 short paragraph per section.${bizBlock}
+  const system = `You are a senior legal news analyst. Generate a concise daily legal briefing for ${today}. Sources: ${sources}. Topics: ${topicNames}.${kwExtra} Cite plausible cases and agencies. 2-3 bullets + 1 short paragraph per section.${bizInstr}
 Reply ONLY in valid JSON, no markdown fences:
-{"sections":[{"topic":"ip","bullets":["..."],"prose":"..."}]${hasBiz?',"biz":[{"type":"opportunity","company":"","sector":"","text":"..."}]':''}}
+{"sections":[{"topic":"ip","bullets":["..."],"prose":"..."${hasBiz?',"biz":[{"type":"opportunity","company":"","sector":"","text":"..."}]':''}}]}
 Only include these topics: ${activeTopics.join(',')}.`;
 
   try {
@@ -478,10 +549,29 @@ Only include these topics: ${activeTopics.join(',')}.`;
     if (!clean) throw new Error('Empty response — check server API key configuration.');
     const parsed = JSON.parse(clean.slice(clean.indexOf('{'), clean.lastIndexOf('}')+1));
 
-    // Build context string
-    S.context = parsed.sections.map(s=>`[${TOPIC_META[s.topic]?.label||s.topic}]\n${s.prose}`).join('\n\n');
+    // Build context string (include biz items per section)
+    S.context = parsed.sections.map(s=>{
+      let ctx = `[${TOPIC_META[s.topic]?.label||s.topic}]\n${s.prose}`;
+      if (s.biz?.length) ctx += '\n' + s.biz.map(x=>`${x.type.toUpperCase()}${x.company?' ('+x.company+')':''}: ${x.text}`).join('\n');
+      return ctx;
+    }).join('\n\n');
 
-    // Render sections
+    // Render sections with inline biz intel
+    const renderBizItems = (items) => {
+      if (!items?.length) return '';
+      const opps  = items.filter(x=>x.type==='opportunity');
+      const risks = items.filter(x=>x.type==='risk');
+      const row = (list,cls,lbl) => list.map(x=>`
+        <div class="biz-item ${cls}">
+          <div class="biz-lbl">${lbl}${x.company?`<span class="co-badge">🏢 ${x.company}</span>`:''}${x.sector&&!x.company?`<span class="co-badge">📊 ${x.sector}</span>`:''}</div>
+          <p>${x.text}</p>
+        </div>`).join('');
+      return `<div class="biz-card" style="margin-top:12px">
+        <div class="biz-title">📊 Opportunities &amp; Risks</div>
+        <div class="biz-items">${row(opps,'opp','▲ Opportunity')}${row(risks,'risk','▼ Risk')}</div>
+      </div>`;
+    };
+
     const out = document.getElementById('brief-out');
     out.innerHTML = parsed.sections.map((s,i)=>{
       const m = TOPIC_META[s.topic]||{label:s.topic,t:s.topic};
@@ -494,33 +584,13 @@ Only include these topics: ${activeTopics.join(',')}.`;
         <ul class="bullets">${(s.bullets||[]).map(b=>`<li>${b}</li>`).join('')}</ul>
         <div style="margin-top:10px" class="section-label">Podcast prose</div>
         <p class="prose">${s.prose||''}</p>
+        ${hasBiz ? renderBizItems(s.biz) : ''}
         <div class="out-actions">
           <button class="act-btn hi" onclick="copy(\`${sp}\`)">📋 Copy prose</button>
           <button class="act-btn"    onclick="copy(\`${sb}\`)">Copy bullets</button>
         </div>
       </div>`;
     }).join('');
-
-    // Render biz intel
-    if (hasBiz && parsed.biz?.length) {
-      const opps  = parsed.biz.filter(x=>x.type==='opportunity');
-      const risks = parsed.biz.filter(x=>x.type==='risk');
-      const renderBiz = (items,cls,lbl) => items.map(x=>`
-        <div class="biz-item ${cls}">
-          <div class="biz-lbl">${lbl}${x.company?`<span class="co-badge">🏢 ${x.company}</span>`:''}${x.sector&&!x.company?`<span class="co-badge">📊 ${x.sector}</span>`:''}</div>
-          <p>${x.text}</p>
-        </div>`).join('');
-      out.innerHTML += `<hr class="divider">
-        <div class="biz-card">
-          <div class="biz-title">📊 Business Intelligence — Legal Opportunities &amp; Risks</div>
-          <div class="biz-items">
-            ${renderBiz(opps,'opp','▲ Opportunity')}
-            ${renderBiz(risks,'risk','▼ Risk')}
-          </div>
-        </div>`;
-      S.context += '\n\n[Business Intelligence]\n' +
-        parsed.biz.map(x=>`${x.type.toUpperCase()}${x.company?' ('+x.company+')':''}: ${x.text}`).join('\n');
-    }
 
     // Save to archive
     const now = new Date();
@@ -644,4 +714,6 @@ async function sendMessage() {
 // ─────────────────────────────────────────────────────────────────────────────
 function copy(t) { navigator.clipboard.writeText(t).catch(()=>{}); }
 function esc(s) { return (s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
+
+loadAlarm();
 </script>
