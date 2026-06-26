@@ -603,7 +603,7 @@ Only include these topics: ${activeTopics.join(',')}.`;
   try {
     const ai = new GoogleGenAI({ apiKey: key });
     const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-1.5-flash',
       contents: [{ role: 'user', parts: [{ text: `Generate briefing. Topics:${activeTopics.join(',')}. Sources:${sources}.` }] }],
       config: { systemInstruction: system, temperature: 0, maxOutputTokens: 2500 }
     });
@@ -681,8 +681,8 @@ Only include these topics: ${activeTopics.join(',')}.`;
 
   } catch(e) {
     if (retries > 0) {
-      // Auto-retry once — keep spinner visible
-      setTimeout(() => generateBriefing(retries - 1), 3000);
+      // Auto-retry once after 35s (Google rate limit retry window is 32s)
+      setTimeout(() => generateBriefing(retries - 1), 35000);
       return;
     }
     document.getElementById('brief-err-msg').textContent = `⚠️ ${e.message}`;
@@ -761,7 +761,7 @@ async function sendMessage() {
       parts: [{ text: m.content }]
     }));
     const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-1.5-flash',
       contents,
       config: { systemInstruction: system, maxOutputTokens: 800 }
     });
