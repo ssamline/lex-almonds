@@ -91,6 +91,10 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
 .bullets{list-style:none;display:flex;flex-direction:column;gap:7px}
 .bullets li{display:flex;gap:10px;font-size:14px;line-height:1.65;color:var(--ink)}
 .bullets li::before{content:'—';color:var(--accent);flex-shrink:0;font-weight:300}
+.bullet-link{color:inherit;border-bottom:1px dotted var(--accent);cursor:pointer}
+.bullet-link:hover{color:var(--accent);border-bottom-style:solid}
+.bullet-src-icon{font-size:11px;color:var(--accent);opacity:.5;margin-left:6px;text-decoration:none;vertical-align:super;flex-shrink:0}
+.bullet-src-icon:hover{opacity:1}
 .prose{font-size:14px;line-height:1.8;color:var(--ink2);font-family:Georgia,serif}
 .out-actions{display:flex;gap:8px;margin-top:.75rem}
 .act-btn{font-family:Arial,sans-serif;font-size:12px;font-weight:500;padding:5px 12px;border:1px solid var(--rule);border-radius:6px;background:var(--white);color:var(--ink2);cursor:pointer}
@@ -151,6 +155,19 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
 .spinner{width:13px;height:13px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:inline-block;vertical-align:middle}
 .spinner.dark{border-color:rgba(26,58,92,.2);border-top-color:var(--accent)}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Article modal ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:1rem}
+.modal-overlay.hidden{display:none}
+.modal-box{background:var(--white);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.18);width:100%;max-width:720px;max-height:90vh;display:flex;flex-direction:column;overflow:hidden}
+.modal-head{padding:1rem 1.25rem;border-bottom:1px solid var(--rule);display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-shrink:0}
+.modal-title{font-family:Georgia,serif;font-size:16px;font-weight:400;color:var(--ink);line-height:1.45;flex:1}
+.modal-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.modal-body{overflow-y:auto;padding:1.25rem;flex:1}
+.modal-article p{font-family:Georgia,serif;font-size:14px;line-height:1.85;color:var(--ink2);margin-bottom:1em}
+.modal-article p:last-child{margin-bottom:0}
+.modal-paywall{background:var(--gold-light);border:1px solid #F0DFA0;border-radius:var(--radius);padding:14px 16px;font-family:Arial,sans-serif;font-size:13px;color:#78580A;margin-bottom:1rem}
+.modal-summary{background:var(--accent-light);border-left:3px solid var(--accent);padding:10px 14px;margin-bottom:1rem;font-family:Georgia,serif;font-size:13px;color:var(--ink2);line-height:1.6}
 </style>
 
 <div class="app">
@@ -322,6 +339,22 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
   </div>
 </div>
 
+<!-- ── Article Reader Modal ── -->
+<div id="article-modal" class="modal-overlay hidden" onclick="if(event.target===this)closeArticle()">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div class="modal-title" id="modal-title">Loading…</div>
+      <div class="modal-actions">
+        <a id="modal-ext-link" href="#" target="_blank" rel="noopener" class="btn-outline" style="font-size:12px">Open original ↗</a>
+        <button class="btn-ghost" onclick="closeArticle()">✕</button>
+      </div>
+    </div>
+    <div class="modal-body" id="modal-body">
+      <div class="hint"><span class="spinner dark"></span>&nbsp;Fetching article…</div>
+    </div>
+  </div>
+</div>
+
 <script>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -484,10 +517,17 @@ document.getElementById('url-in').addEventListener('keydown',e=>{ if(e.key==='En
 // ─────────────────────────────────────────────────────────────────────────────
 function todayKey() { return 'lb_today_' + new Date().toDateString(); }
 
+const CACHE_VERSION = 2; // bump when HTML structure changes
+
 function startBriefing() {
   try {
     const cached = localStorage.getItem(todayKey());
-    if (cached) { restoreBriefing(JSON.parse(cached)); return; }
+    if (cached) {
+      const entry = JSON.parse(cached);
+      // Discard cache from older code versions (no bullet links)
+      if ((entry.v || 1) < CACHE_VERSION) { localStorage.removeItem(todayKey()); }
+      else { restoreBriefing(entry); return; }
+    }
   } catch(e) {}
   generateBriefing();
 }
@@ -532,9 +572,24 @@ async function generateBriefing(retries = 1) {
   if (S.companies.length)   bizInstr += ` Tracked companies: ${S.companies.join(', ')}.`;
   bizInstr += ` Each biz item: {type:"opportunity"|"risk",company:"name or empty",sector:"name or empty",text:"1-2 sentences"}.`;
 
-  const system = `You are a senior legal news analyst. Generate a concise daily legal briefing for ${today}. Sources: ${sources}. Topics: ${topicNames}.${kwExtra} Cite plausible cases and agencies. 2-3 bullets + 1 short paragraph per section.${bizInstr}
+  // Fetch real news articles first
+  let articleCtx = '';
+  try {
+    const newsRes  = await fetch('/api/search-news', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topics: activeTopics, keywords: S.keywords })
+    });
+    const newsData = await newsRes.json();
+    if (newsData.articles?.length) {
+      articleCtx = '\n\nReal news articles retrieved today (base each bullet on one of these and use its exact URL as "source"):\n' +
+        newsData.articles.map((a, i) => `${i+1}. [${a.topic}] ${a.title}\n   URL: ${a.link}`).join('\n');
+    }
+  } catch(e) { /* proceed without real articles */ }
+
+  const system = `You are a senior legal news analyst. Generate a concise daily legal briefing for ${today}. Topics: ${topicNames}.${kwExtra} 2-3 bullets + 1 short paragraph per section.${bizInstr}${articleCtx}
+IMPORTANT: Each bullet MUST use a real article from the list above. Set "source" to that article's exact URL. If no articles are listed, use a plausible URL from: ${sources}.
 Reply ONLY in valid JSON, no markdown fences, no extra text:
-{"sections":[{"topic":"ip","bullets":["..."],"prose":"...","biz":[{"type":"opportunity","company":"","sector":"","text":"..."}]}]}
+{"sections":[{"topic":"ip","bullets":[{"text":"one-sentence summary of the article","source":"https://full-article-url"}],"prose":"...","biz":[{"type":"opportunity","company":"","sector":"","text":"..."}]}]}
 Only include these topics: ${activeTopics.join(',')}.`;
 
   try {
@@ -546,7 +601,7 @@ Only include these topics: ${activeTopics.join(',')}.`;
         max_tokens: 2500,
         temperature: 0,
         system,
-        messages: [{ role: 'user', content: `Generate briefing. Topics:${activeTopics.join(',')}. Sources:${sources}.` }]
+        messages: [{ role: 'user', content: `Generate briefing. Topics:${activeTopics.join(',')}.` }]
       })
     });
     const text = await res.text();
@@ -564,9 +619,19 @@ Only include these topics: ${activeTopics.join(',')}.`;
     if (!clean) throw new Error('Empty AI response — verify ANTHROPIC_API_KEY is set in Render environment variables.');
     const parsed = JSON.parse(clean.slice(clean.indexOf('{'), clean.lastIndexOf('}')+1));
 
+    // Normalize bullets to {text, source} objects regardless of AI output format
+    const urls = S.urls.length ? S.urls : ['law360.com'];
+    parsed.sections.forEach(s => {
+      s.bullets = (s.bullets || []).map((b, i) => {
+        if (typeof b === 'string') return { text: b, source: urls[i % urls.length] };
+        return { text: b.text || String(b), source: b.source || urls[i % urls.length] };
+      });
+    });
+
     // Build context string (include biz items per section)
     S.context = parsed.sections.map(s=>{
-      let ctx = `[${TOPIC_META[s.topic]?.label||s.topic}]\n${s.prose}`;
+      const bullets = (s.bullets||[]).map(b=>typeof b==='string'?b:b.text);
+      let ctx = `[${TOPIC_META[s.topic]?.label||s.topic}]\n${bullets.join('\n')}\n${s.prose}`;
       if (s.biz?.length) ctx += '\n' + s.biz.map(x=>`${x.type.toUpperCase()}${x.company?' ('+x.company+')':''}: ${x.text}`).join('\n');
       return ctx;
     }).join('\n\n');
@@ -591,12 +656,21 @@ Only include these topics: ${activeTopics.join(',')}.`;
     out.innerHTML = parsed.sections.map((s,i)=>{
       const m = TOPIC_META[s.topic]||{label:s.topic,t:s.topic};
       const sp = (s.prose||'').replace(/`/g,'\\`');
-      const sb = (s.bullets||[]).map(b=>'— '+b).join('\\n').replace(/`/g,'\\`');
+      const sb = (s.bullets||[]).map(b=>'— '+(typeof b==='string'?b:b.text)).join('\\n').replace(/`/g,'\\`');
       return `<div class="brief-section">
         ${i>0?'<hr class="divider">':''}
         <span class="topic-tag" data-t="${m.t}">${m.label}</span>
         <div class="section-label">Key developments</div>
-        <ul class="bullets">${(s.bullets||[]).map(b=>`<li>${b}</li>`).join('')}</ul>
+        <ul class="bullets">${(s.bullets||[]).map(b=>{
+          const text  = typeof b === 'string' ? b : b.text;
+          const src   = typeof b === 'object' && b.source ? b.source : null;
+          const href  = src ? (src.startsWith('http') ? src : 'https://' + src) : null;
+          const safeText = text.replace(/\\/g,'\\\\').replace(/`/g,'\\`').replace(/'/g,"\\'");
+          const safeHref = href ? href.replace(/'/g,"\\'") : '';
+          return href
+            ? `<li><span class="bullet-link" onclick="openArticle('${safeHref}','${safeText}')">${text}</span><a class="bullet-src-icon" href="${href}" target="_blank" rel="noopener" title="Open in new tab">↗</a></li>`
+            : `<li>${text}</li>`;
+        }).join('')}</ul>
         <div style="margin-top:10px" class="section-label">Podcast prose</div>
         <p class="prose">${s.prose||''}</p>
         ${hasBiz ? renderBizItems(s.biz) : ''}
@@ -610,6 +684,7 @@ Only include these topics: ${activeTopics.join(',')}.`;
     // Save to archive
     const now = new Date();
     const entry = {
+      v:     CACHE_VERSION,
       id:    now.getTime(),
       date:  now.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}),
       time:  now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}),
@@ -727,6 +802,53 @@ async function sendMessage() {
   document.getElementById('chat-area').scrollTop = 9999;
   document.getElementById('send-btn').disabled = false;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ARTICLE READER
+// ─────────────────────────────────────────────────────────────────────────────
+async function openArticle(url, summary) {
+  const modal   = document.getElementById('article-modal');
+  const title   = document.getElementById('modal-title');
+  const body    = document.getElementById('modal-body');
+  const extLink = document.getElementById('modal-ext-link');
+
+  title.textContent    = 'Loading…';
+  body.innerHTML       = '<div class="hint"><span class="spinner dark"></span>&nbsp;Fetching article…</div>';
+  extLink.href         = url;
+  modal.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+
+  try {
+    const res  = await fetch('/api/fetch-article', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    const data = await res.json();
+
+    title.textContent = data.title || 'Article';
+    extLink.href      = data.finalUrl || url;
+
+    let html = `<div class="modal-summary">${summary}</div>`;
+
+    if (data.paragraphs && data.paragraphs.length >= 2) {
+      html += `<div class="modal-article">${data.paragraphs.map(p=>`<p>${p}</p>`).join('')}</div>`;
+    } else {
+      html += `<div class="modal-paywall">⚠️ Full content is behind a paywall or could not be extracted. Click <strong>Open original ↗</strong> above to read on the publisher's site.</div>`;
+      if (data.desc) html += `<div class="modal-article"><p>${data.desc}</p></div>`;
+    }
+    body.innerHTML = html;
+  } catch(e) {
+    body.innerHTML = `<div class="modal-paywall">⚠️ Could not fetch article: ${e.message}</div>`;
+  }
+}
+
+function closeArticle() {
+  document.getElementById('article-modal').classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeArticle(); });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UTILS
