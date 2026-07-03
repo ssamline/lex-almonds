@@ -1080,54 +1080,137 @@ async function listenBriefing() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SONG GENERATION (HuggingFace MusicGen — free)
+// SONG GENERATION — browser Web Audio API (no API key, no account needed)
 // ─────────────────────────────────────────────────────────────────────────────
+let _songCtx = null;
+
 async function startSong() {
   const btn      = document.getElementById('song-btn');
-  const audioEl  = document.getElementById('brief-audio');
   const bar      = document.getElementById('audio-bar');
   const statusEl = document.getElementById('audio-status');
 
+  // Toggle off if already playing
+  if (_songCtx) {
+    _songCtx.close().catch(() => {});
+    _songCtx = null;
+    btn.textContent      = '♪ Song';
+    statusEl.textContent = '';
+    return;
+  }
+
   let text = '';
   document.querySelectorAll('#brief-out .brief-section').forEach(sec => {
-    const topic = sec.querySelector('.topic-tag')?.textContent?.trim() || '';
-    const prose = sec.querySelector('.prose')?.textContent?.trim()     || '';
-    if (prose) text += (topic ? topic + ': ' : '') + prose + ' ';
+    const prose = sec.querySelector('.prose')?.textContent?.trim() || '';
+    if (prose) text += prose + ' ';
   });
-  text = text.trim();
-  if (!text) return;
+  if (!text.trim()) return;
 
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner dark"></span>';
+  btn.disabled         = true;
+  btn.innerHTML        = '<span class="spinner dark"></span>';
   bar.style.display    = 'block';
-  audioEl.src          = '';
-  statusEl.textContent = '🎵 Composing song… (30-90s, model may need to wake up)';
+  statusEl.textContent = '🎵 Composing…';
 
   try {
-    const res = await fetch('/api/song-generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
-    });
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AudioCtx();
+    _songCtx  = ctx;
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || `HTTP ${res.status}`);
+    // Master chain: gain → compressor → output
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -8; comp.ratio.value = 4;
+    comp.connect(ctx.destination);
+    const master = ctx.createGain();
+    master.gain.value = 0.55;
+    master.connect(comp);
+
+    // Delay for warmth/space
+    const dly  = ctx.createDelay(0.5);  dly.delayTime.value  = 0.28;
+    const dlyG = ctx.createGain();      dlyG.gain.value      = 0.18;
+    const dlyF = ctx.createGain();      dlyF.gain.value      = 0.22;
+    dly.connect(dlyF); dlyF.connect(dly); // feedback loop
+    dly.connect(dlyG); dlyG.connect(master);
+
+    // Piano-like tone via additive synthesis (fundamental + 3 harmonics)
+    function playNote(f, when, dur, vol) {
+      [1, 2, 3, 4].forEach((h, i) => {
+        const osc = ctx.createOscillator();
+        const g   = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = f * h;
+        osc.connect(g); g.connect(master); g.connect(dly);
+        const amp   = vol / (i + 1);
+        const decay = Math.min(dur, 2.5 / h);
+        g.gain.setValueAtTime(0,   when);
+        g.gain.linearRampToValueAtTime(amp, when + 0.008);
+        g.gain.exponentialRampToValueAtTime(0.0001, when + decay);
+        osc.start(when); osc.stop(when + decay + 0.05);
+      });
     }
 
-    const blob = await res.blob();
-    const url  = URL.createObjectURL(blob);
-    statusEl.textContent = '🎵 Song Version';
-    audioEl.src = url;
-    audioEl.play();
+    // Frequency of a named note+octave in equal temperament
+    function hz(name, oct) {
+      const s = {C:0,'C#':1,D:2,'D#':3,E:4,F:5,'F#':6,G:7,'G#':8,A:9,'A#':10,B:11};
+      return 440 * Math.pow(2, (s[name] - 9 + (oct - 4) * 12) / 12);
+    }
+
+    // Seed from briefing text — determines key and melody contour
+    const seed = Math.abs([...text.slice(0, 120)]
+      .reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0));
+
+    // Three key options (C / D / G major pentatonic)
+    const KEYS = [
+      { scale:['C','D','E','G','A'], prog:[['C','E','G'],['G','B','D'],['A','C','E'],['F','A','C']], bass:['C','G','A','F'] },
+      { scale:['D','E','F#','A','B'], prog:[['D','F#','A'],['A','C#','E'],['B','D','F#'],['G','B','D']], bass:['D','A','B','G'] },
+      { scale:['G','A','B','D','E'],  prog:[['G','B','D'],['D','F#','A'],['E','G','B'],['C','E','G']], bass:['G','D','E','C'] },
+    ];
+    const K   = KEYS[seed % KEYS.length];
+    const bpm = 88 + (seed % 22);       // 88-110 BPM
+    const b   = 60 / bpm;
+    const t0  = ctx.currentTime + 0.2;
+
+    // 8 bars: bass + pad chords + pentatonic melody
+    for (let bar = 0; bar < 8; bar++) {
+      const pi   = bar % 4;
+      const t    = t0 + bar * 4 * b;
+
+      // Bass — beats 1 and 3
+      playNote(hz(K.bass[pi], 3), t,       b * 1.8, 0.55);
+      playNote(hz(K.bass[pi], 3), t + 2*b, b * 1.6, 0.45);
+
+      // Chord pad — offbeats (2 and 4), soft
+      K.prog[pi].forEach(n => {
+        playNote(hz(n, 4), t +   b, b * 1.3, 0.09);
+        playNote(hz(n, 4), t + 3*b, b * 1.3, 0.07);
+      });
+
+      // Melody — 4 pentatonic notes per bar, with occasional rests
+      for (let beat = 0; beat < 4; beat++) {
+        if ((seed + bar + beat) % 5 === 0) continue; // rhythmic rest
+        const ni = (seed + bar * 7 + beat * 3) % K.scale.length;
+        playNote(hz(K.scale[ni], 5), t + beat * b, b * 0.72, 0.27);
+      }
+    }
+
+    const totalSec = 8 * 4 * b;
+    btn.disabled         = false;
+    btn.textContent      = '⏹ Stop';
+    statusEl.textContent = '🎵 Song Version — playing  (click ⏹ Stop to end)';
+
+    setTimeout(() => {
+      if (_songCtx === ctx) {
+        ctx.close().catch(() => {});
+        _songCtx             = null;
+        btn.textContent      = '♪ Song';
+        statusEl.textContent = '🎵 Song complete';
+      }
+    }, (totalSec + 1.5) * 1000);
+
   } catch(e) {
-    statusEl.textContent = '⚠️ ' + e.message;
-    if (e.message.includes('HUGGINGFACE')) {
-      statusEl.textContent += ' — add HUGGINGFACE_TOKEN in Render env vars (free at huggingface.co).';
-    }
+    _songCtx             = null;
+    statusEl.textContent = '⚠️ ' + (e.message || 'Web Audio not supported in this browser.');
+    btn.disabled         = false;
+    btn.textContent      = '♪ Song';
   }
-  btn.disabled = false;
-  btn.textContent = '♪ Song';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
