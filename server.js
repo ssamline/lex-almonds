@@ -188,6 +188,32 @@ app.post('/api/legal-search', async (req, res) => {
   res.json({ cases, articles });
 });
 
+app.post('/api/tts', async (req, res) => {
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not configured in Render environment variables.' });
+
+  const { text, voice = 'nova' } = req.body;
+  if (!text?.trim()) return res.status(400).json({ error: 'No text provided.' });
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${openaiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'tts-1', input: text.slice(0, 4096), voice, response_format: 'mp3' }),
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      return res.status(response.status).json({ error: err.error?.message || 'TTS request failed.' });
+    }
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(Buffer.from(await response.arrayBuffer()));
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/chat', async (req, res) => {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return res.status(500).json({ error: { message: 'ANTHROPIC_API_KEY not set on server.' } });

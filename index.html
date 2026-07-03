@@ -238,7 +238,10 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
               <span class="spinner dark"></span>&nbsp;Generating…
             </span>
           </div>
-          <button class="btn-outline" id="renew-btn" onclick="generateBriefing()">↻ Renew</button>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn-outline" id="listen-btn" onclick="listenBriefing()" style="display:none">▶ Listen</button>
+            <button class="btn-outline" id="renew-btn"  onclick="generateBriefing()">↻ Renew</button>
+          </div>
         </div>
         <div class="card-body">
           <div id="brief-empty" style="text-align:center;padding:2rem 1rem;display:none">
@@ -246,9 +249,13 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
             <button class="btn-primary" onclick="generateBriefing()">↻ Try again</button>
           </div>
           <div id="brief-out" style="display:none"></div>
+          <!-- Podcast audio player -->
+          <div id="audio-bar" style="display:none;margin-top:1rem;padding:12px 0 4px;border-top:1px solid var(--rule)">
+            <div style="font-family:Arial,sans-serif;font-size:11px;font-weight:600;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px" id="audio-status">🎙 Podcast Summary</div>
+            <audio id="brief-audio" controls style="width:100%;height:36px"></audio>
+          </div>
         </div>
       </div>
-      <div class="note">📎 <span><strong>NotebookLM tip:</strong> Copy any Podcast Prose section and paste into <a href="https://notebooklm.google.com" target="_blank" style="color:var(--gold)">NotebookLM</a> → Audio Overview for a daily podcast.</span></div>
     </div>
 
     <!-- ══ RESEARCH HUB (Your Thoughts) ══ -->
@@ -600,9 +607,10 @@ function restoreBriefing(entry) {
   const out = document.getElementById('brief-out');
   out.innerHTML = entry.html;
   out.style.display = 'block';
-  document.getElementById('brief-badge').style.display = 'inline-flex';
-  document.getElementById('brief-ts').style.display    = 'inline';
-  document.getElementById('brief-ts').textContent      = 'Loaded ' + entry.time;
+  document.getElementById('brief-badge').style.display  = 'inline-flex';
+  document.getElementById('brief-ts').style.display     = 'inline';
+  document.getElementById('brief-ts').textContent       = 'Loaded ' + entry.time;
+  document.getElementById('listen-btn').style.display   = 'inline-flex';
   S.context = entry.context || '';
   document.getElementById('ctx-badge').textContent = `📰 Today's briefing loaded`;
 }
@@ -776,9 +784,11 @@ Only include these topics: ${activeTopics.join(',')}.`;
 
     // Update UI
     out.style.display = 'block';
-    document.getElementById('brief-badge').style.display = 'inline-flex';
-    document.getElementById('brief-ts').style.display    = 'inline';
-    document.getElementById('brief-ts').textContent      = 'Updated ' + entry.time;
+    document.getElementById('brief-badge').style.display  = 'inline-flex';
+    document.getElementById('brief-ts').style.display     = 'inline';
+    document.getElementById('brief-ts').textContent       = 'Updated ' + entry.time;
+    document.getElementById('listen-btn').style.display   = 'inline-flex';
+    document.getElementById('audio-bar').style.display    = 'none'; // reset player on new briefing
     document.getElementById('ctx-badge').textContent     = `📰 ${activeTopics.length * 3} items in context`;
 
   } catch(e) {
@@ -983,6 +993,87 @@ Be concise but thorough. If information comes from CourtListener or a news sourc
   }
   document.getElementById('chat-area').scrollTop = 9999;
   document.getElementById('send-btn').disabled = false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PODCAST LISTEN (OpenAI TTS)
+// ─────────────────────────────────────────────────────────────────────────────
+function chunkText(text, max = 3800) {
+  if (text.length <= max) return [text];
+  const chunks = [];
+  let rest = text;
+  while (rest.length > max) {
+    let cut = rest.lastIndexOf('. ', max);
+    cut = cut > max * 0.5 ? cut + 2 : max;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
+async function listenBriefing() {
+  const btn      = document.getElementById('listen-btn');
+  const audioEl  = document.getElementById('brief-audio');
+  const bar      = document.getElementById('audio-bar');
+  const statusEl = document.getElementById('audio-status');
+
+  // Build podcast script from prose sections
+  const today  = document.getElementById('hdate')?.textContent || '';
+  let script   = `Today's legal briefing${today ? ' for ' + today : ''}. `;
+  document.querySelectorAll('#brief-out .brief-section').forEach(sec => {
+    const topic = sec.querySelector('.topic-tag')?.textContent?.trim() || '';
+    const prose = sec.querySelector('.prose')?.textContent?.trim()     || '';
+    if (prose) script += (topic ? topic + '. ' : '') + prose + ' ';
+  });
+  script = script.trim();
+  if (!script) return;
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner dark"></span>';
+  bar.style.display = 'block';
+  statusEl.textContent = '🎙 Generating audio…';
+  audioEl.src = '';
+
+  const chunks  = chunkText(script);
+  const blobUrls = [];
+
+  for (let i = 0; i < chunks.length; i++) {
+    statusEl.textContent = `🎙 Generating part ${i + 1} of ${chunks.length}…`;
+    try {
+      const res = await fetch('/api/tts', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: chunks[i], voice: 'nova' })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      blobUrls.push(URL.createObjectURL(await res.blob()));
+    } catch(e) {
+      statusEl.textContent = '⚠️ ' + e.message + ' — add OPENAI_API_KEY in Render environment variables.';
+      btn.disabled = false; btn.textContent = '▶ Listen';
+      return;
+    }
+  }
+
+  // Play chunks sequentially
+  let idx = 0;
+  function playNext() {
+    if (idx >= blobUrls.length) {
+      statusEl.textContent = '🎙 Podcast Summary — done';
+      btn.disabled = false; btn.textContent = '▶ Listen';
+      return;
+    }
+    statusEl.textContent = chunks.length > 1
+      ? `🎙 Playing part ${idx + 1} of ${chunks.length}`
+      : '🎙 Podcast Summary';
+    audioEl.src = blobUrls[idx++];
+    audioEl.play();
+  }
+  audioEl.onended = playNext;
+  btn.disabled = false; btn.textContent = '⏸ Playing';
+  playNext();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
