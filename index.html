@@ -1080,23 +1080,22 @@ async function listenBriefing() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SONG GENERATION — browser Web Audio API (no API key, no account needed)
+// SONG GENERATION — Claude writes lyrics, user pastes into Suno (free tier)
 // ─────────────────────────────────────────────────────────────────────────────
-let _songCtx = null;
+let _songLyrics = '';
+
+function copySongLyrics() {
+  if (!_songLyrics) return;
+  navigator.clipboard.writeText(_songLyrics).then(() => {
+    const b = document.getElementById('copy-lyrics-btn');
+    if (b) { b.textContent = '✓ Copied!'; setTimeout(() => { b.textContent = '📋 Copy Lyrics'; }, 2000); }
+  });
+}
 
 async function startSong() {
   const btn      = document.getElementById('song-btn');
   const bar      = document.getElementById('audio-bar');
   const statusEl = document.getElementById('audio-status');
-
-  // Toggle off if already playing
-  if (_songCtx) {
-    _songCtx.close().catch(() => {});
-    _songCtx = null;
-    btn.textContent      = '♪ Song';
-    statusEl.textContent = '';
-    return;
-  }
 
   let text = '';
   document.querySelectorAll('#brief-out .brief-section').forEach(sec => {
@@ -1108,109 +1107,62 @@ async function startSong() {
   btn.disabled         = true;
   btn.innerHTML        = '<span class="spinner dark"></span>';
   bar.style.display    = 'block';
-  statusEl.textContent = '🎵 Composing…';
+  statusEl.innerHTML   = '<span style="color:var(--muted)">🎵 Writing lyrics from your briefing…</span>';
+
+  let lyrics = '';
+  let style  = 'upbeat pop, energetic, professional';
 
   try {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    const ctx = new AudioCtx();
-    _songCtx  = ctx;
-
-    // Master chain: gain → compressor → output
-    const comp = ctx.createDynamicsCompressor();
-    comp.threshold.value = -8; comp.ratio.value = 4;
-    comp.connect(ctx.destination);
-    const master = ctx.createGain();
-    master.gain.value = 0.55;
-    master.connect(comp);
-
-    // Delay for warmth/space
-    const dly  = ctx.createDelay(0.5);  dly.delayTime.value  = 0.28;
-    const dlyG = ctx.createGain();      dlyG.gain.value      = 0.18;
-    const dlyF = ctx.createGain();      dlyF.gain.value      = 0.22;
-    dly.connect(dlyF); dlyF.connect(dly); // feedback loop
-    dly.connect(dlyG); dlyG.connect(master);
-
-    // Piano-like tone via additive synthesis (fundamental + 3 harmonics)
-    function playNote(f, when, dur, vol) {
-      [1, 2, 3, 4].forEach((h, i) => {
-        const osc = ctx.createOscillator();
-        const g   = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.value = f * h;
-        osc.connect(g); g.connect(master); g.connect(dly);
-        const amp   = vol / (i + 1);
-        const decay = Math.min(dur, 2.5 / h);
-        g.gain.setValueAtTime(0,   when);
-        g.gain.linearRampToValueAtTime(amp, when + 0.008);
-        g.gain.exponentialRampToValueAtTime(0.0001, when + decay);
-        osc.start(when); osc.stop(when + decay + 0.05);
-      });
-    }
-
-    // Frequency of a named note+octave in equal temperament
-    function hz(name, oct) {
-      const s = {C:0,'C#':1,D:2,'D#':3,E:4,F:5,'F#':6,G:7,'G#':8,A:9,'A#':10,B:11};
-      return 440 * Math.pow(2, (s[name] - 9 + (oct - 4) * 12) / 12);
-    }
-
-    // Seed from briefing text — determines key and melody contour
-    const seed = Math.abs([...text.slice(0, 120)]
-      .reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0));
-
-    // Three key options (C / D / G major pentatonic)
-    const KEYS = [
-      { scale:['C','D','E','G','A'], prog:[['C','E','G'],['G','B','D'],['A','C','E'],['F','A','C']], bass:['C','G','A','F'] },
-      { scale:['D','E','F#','A','B'], prog:[['D','F#','A'],['A','C#','E'],['B','D','F#'],['G','B','D']], bass:['D','A','B','G'] },
-      { scale:['G','A','B','D','E'],  prog:[['G','B','D'],['D','F#','A'],['E','G','B'],['C','E','G']], bass:['G','D','E','C'] },
-    ];
-    const K   = KEYS[seed % KEYS.length];
-    const bpm = 88 + (seed % 22);       // 88-110 BPM
-    const b   = 60 / bpm;
-    const t0  = ctx.currentTime + 0.2;
-
-    // 8 bars: bass + pad chords + pentatonic melody
-    for (let bar = 0; bar < 8; bar++) {
-      const pi   = bar % 4;
-      const t    = t0 + bar * 4 * b;
-
-      // Bass — beats 1 and 3
-      playNote(hz(K.bass[pi], 3), t,       b * 1.8, 0.55);
-      playNote(hz(K.bass[pi], 3), t + 2*b, b * 1.6, 0.45);
-
-      // Chord pad — offbeats (2 and 4), soft
-      K.prog[pi].forEach(n => {
-        playNote(hz(n, 4), t +   b, b * 1.3, 0.09);
-        playNote(hz(n, 4), t + 3*b, b * 1.3, 0.07);
-      });
-
-      // Melody — 4 pentatonic notes per bar, with occasional rests
-      for (let beat = 0; beat < 4; beat++) {
-        if ((seed + bar + beat) % 5 === 0) continue; // rhythmic rest
-        const ni = (seed + bar * 7 + beat * 3) % K.scale.length;
-        playNote(hz(K.scale[ni], 5), t + beat * b, b * 0.72, 0.27);
-      }
-    }
-
-    const totalSec = 8 * 4 * b;
-    btn.disabled         = false;
-    btn.textContent      = '⏹ Stop';
-    statusEl.textContent = '🎵 Song Version — playing  (click ⏹ Stop to end)';
-
-    setTimeout(() => {
-      if (_songCtx === ctx) {
-        ctx.close().catch(() => {});
-        _songCtx             = null;
-        btn.textContent      = '♪ Song';
-        statusEl.textContent = '🎵 Song complete';
-      }
-    }, (totalSec + 1.5) * 1000);
-
+    const res  = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 320,
+        system: 'You are a creative songwriter. Given a legal news briefing, write freestyle song lyrics and suggest a Suno music style. Respond ONLY in this exact JSON:\n{"lyrics":"line1\\nline2\\nline3\\nline4\\nline5\\nline6","style":"genre, mood, energy"}',
+        messages: [{ role: 'user', content: `Write song lyrics based on this legal briefing:\n\n${text.slice(0, 700)}` }]
+      })
+    });
+    const data = await res.json();
+    const raw  = (data.content?.[0]?.text || '').trim();
+    try {
+      const m = raw.match(/\{[\s\S]*?\}/);
+      if (m) { const p = JSON.parse(m[0]); lyrics = p.lyrics || ''; style = p.style || style; }
+    } catch {}
+    if (!lyrics) lyrics = raw.replace(/```[\s\S]*?```/g, '').slice(0, 300).trim();
   } catch(e) {
-    _songCtx             = null;
-    statusEl.textContent = '⚠️ ' + (e.message || 'Web Audio not supported in this browser.');
-    btn.disabled         = false;
-    btn.textContent      = '♪ Song';
+    lyrics = text.slice(0, 250);
   }
+
+  _songLyrics = lyrics;
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  statusEl.innerHTML = `
+    <div style="font-weight:600;color:var(--accent);margin-bottom:8px">🎵 Song Lyrics — paste into Suno</div>
+    <div id="lyrics-display" style="white-space:pre-wrap;font-style:italic;line-height:1.75;
+      padding:10px 14px;background:rgba(0,0,0,0.06);border-radius:8px;font-size:13px;
+      margin-bottom:10px;border-left:3px solid var(--accent)">${esc(lyrics)}</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
+      Suggested Suno style: <b>${esc(style)}</b>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button id="copy-lyrics-btn" onclick="copySongLyrics()"
+        style="font-size:12px;padding:5px 13px;border:1.5px solid var(--accent);background:transparent;
+          color:var(--accent);border-radius:6px;cursor:pointer;font-weight:500">
+        📋 Copy Lyrics
+      </button>
+      <a href="https://suno.com/create" target="_blank" rel="noopener"
+        style="font-size:12px;padding:5px 13px;background:var(--accent);color:#fff;
+          border-radius:6px;text-decoration:none;font-weight:600">
+        Open Suno ↗
+      </a>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:9px">
+      In Suno: <b>Custom mode</b> → paste lyrics → add style above → Generate
+    </div>`;
+
+  btn.disabled    = false;
+  btn.textContent = '♪ Song';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
