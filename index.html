@@ -203,6 +203,20 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
 .modal-article p:last-child{margin-bottom:0}
 .modal-paywall{background:var(--gold-light);border:1px solid #F0DFA0;border-radius:var(--radius);padding:14px 16px;font-family:Arial,sans-serif;font-size:13px;color:#78580A;margin-bottom:1rem}
 .modal-summary{background:var(--accent-light);border-left:3px solid var(--accent);padding:10px 14px;margin-bottom:1rem;font-family:Georgia,serif;font-size:13px;color:var(--ink2);line-height:1.6}
+
+/* ── Competitive Compare ── */
+.compare-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;margin-top:1rem}
+.compare-card{border:1px solid var(--rule);border-radius:var(--radius);padding:1rem;background:var(--white)}
+.compare-card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:.6rem;gap:6px;flex-wrap:wrap}
+.risk-badge{font-family:Arial,sans-serif;font-size:10px;font-weight:700;padding:2px 8px;border-radius:100px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
+.risk-high{background:#FEE2E2;color:#B91C1C}
+.risk-medium{background:#FEF3C7;color:#92400E}
+.risk-low{background:#DCFCE7;color:#15803D}
+.compare-section{margin-top:.6rem}
+.compare-section-label{font-family:Arial,sans-serif;font-size:10px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+.compare-list{list-style:none;padding:0;display:flex;flex-direction:column;gap:2px}
+.compare-list li{font-family:Arial,sans-serif;font-size:12px;color:var(--ink2);display:flex;gap:5px}
+.compare-list li::before{content:'•';color:var(--ink3);flex-shrink:0}
 </style>
 
 <div class="app">
@@ -267,6 +281,7 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
           <button class="sub-btn active" id="sub-btn-archive" onclick="showSubPanel('archive',this)">📚 Archive</button>
           <button class="sub-btn" id="sub-btn-search"  onclick="showSubPanel('search',this)">🔍 Search Stories</button>
           <button class="sub-btn" id="sub-btn-qa"      onclick="showSubPanel('qa',this)">⚖️ Legal Q&amp;A</button>
+          <button class="sub-btn" id="sub-btn-compare" onclick="showSubPanel('compare',this)">📊 Compare</button>
         </div>
       </div>
 
@@ -318,6 +333,22 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
           </div>
         </div>
         <div class="note">⚖️ <span>Each question searches your news sources and <strong>CourtListener</strong> for relevant context before answering. Results are AI-synthesized — verify with primary sources.</span></div>
+      </div>
+
+      <!-- (d) Compare Companies -->
+      <div class="sub-panel" id="sub-compare">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">📊 Competitive Legal Analysis</span>
+            <button class="btn-outline" id="compare-run-btn" onclick="compareCompanies()" style="display:none">↻ Refresh</button>
+          </div>
+          <div class="card-body">
+            <div id="compare-hint" style="font-family:Arial,sans-serif;font-size:13px;color:var(--ink3)">Add 2 or more companies in <strong>Sources &amp; Topics → Tracked Companies</strong> to generate a competitive legal analysis.</div>
+            <div id="compare-spin" style="display:none" class="hint"><span class="spinner dark"></span>&nbsp;Analyzing across SEC filings, court cases, and your news sources…</div>
+            <div id="compare-out" style="display:none"></div>
+          </div>
+        </div>
+        <div class="note">📊 <span>Analysis draws from <strong>SEC EDGAR</strong> public filings, <strong>CourtListener</strong> federal cases, and your selected news sources. AI-synthesized — verify with primary sources.</span></div>
       </div>
 
     </div>
@@ -467,6 +498,46 @@ try {
   renderArchive();
 } catch(e) {}
 
+// Restore Sources preferences
+try {
+  const su = localStorage.getItem('lexbrief_urls');
+  if (su) {
+    const urls = JSON.parse(su);
+    if (urls.length) {
+      S.urls = urls;
+      document.getElementById('url-items').innerHTML = urls.map(v =>
+        `<div class="url-item"><span>${v}</span><button class="url-del" onclick="removeUrl(this,'${v}')">×</button></div>`
+      ).join('');
+    }
+  }
+} catch {}
+
+// Restore topic pill states
+try {
+  const st = localStorage.getItem('lexbrief_topics');
+  if (st) {
+    Object.assign(S.topics, JSON.parse(st));
+    document.querySelectorAll('.topic-pill[data-topic]').forEach(el => {
+      el.classList.toggle('off', !S.topics[el.dataset.topic]);
+    });
+  }
+} catch {}
+
+// Restore sector pill states
+try {
+  const ss = localStorage.getItem('lexbrief_sectors');
+  if (ss) {
+    S.sectors = JSON.parse(ss);
+    document.querySelectorAll('.topic-pill[data-sector]').forEach(el => {
+      el.classList.toggle('off', !S.sectors[el.dataset.sector]);
+    });
+  }
+} catch {}
+
+// Restore keywords and companies
+try { const sk = localStorage.getItem('lexbrief_keywords'); if (sk) { S.keywords = JSON.parse(sk); renderKwChips(); } } catch {}
+try { const sc = localStorage.getItem('lexbrief_companies'); if (sc) { S.companies = JSON.parse(sc); renderCoChips(); } } catch {}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ALARM
 // ─────────────────────────────────────────────────────────────────────────────
@@ -541,18 +612,24 @@ function toggleTopic(el) {
   const t = el.dataset.topic;
   S.topics[t] = !S.topics[t];
   el.classList.toggle('off', !S.topics[t]);
+  try { localStorage.setItem('lexbrief_topics', JSON.stringify(S.topics)); } catch {}
 }
 function toggleSector(el) {
   const s = el.dataset.sector;
   S.sectors[s] = !S.sectors[s];
   el.classList.toggle('off', !S.sectors[s]);
+  try { localStorage.setItem('lexbrief_sectors', JSON.stringify(S.sectors)); } catch {}
 }
 function addKeyword() {
   const inp = document.getElementById('kw-in'), v = inp.value.trim();
   if (!v || S.keywords.includes(v)) { inp.value=''; return; }
   S.keywords.push(v); renderKwChips(); inp.value='';
+  try { localStorage.setItem('lexbrief_keywords', JSON.stringify(S.keywords)); } catch {}
 }
-function removeKeyword(k) { S.keywords = S.keywords.filter(x=>x!==k); renderKwChips(); }
+function removeKeyword(k) {
+  S.keywords = S.keywords.filter(x=>x!==k); renderKwChips();
+  try { localStorage.setItem('lexbrief_keywords', JSON.stringify(S.keywords)); } catch {}
+}
 function renderKwChips() {
   document.getElementById('kw-chips').innerHTML =
     S.keywords.map(k=>`<span class="chip">${k}<button class="chip-x" onclick="removeKeyword('${esc(k)}')">×</button></span>`).join('');
@@ -564,8 +641,14 @@ function addCompany() {
 }
 function removeCompany(c) { S.companies = S.companies.filter(x=>x!==c); renderCoChips(); }
 function renderCoChips() {
-  document.getElementById('co-chips').innerHTML =
-    S.companies.map(c=>`<span class="chip company">🏢 ${c}<button class="chip-x" onclick="removeCompany('${esc(c)}')">×</button></span>`).join('');
+  const chips = S.companies.map(c =>
+    `<span class="chip company">🏢 ${c}<button class="chip-x" onclick="removeCompany('${esc(c)}')">×</button></span>`
+  ).join('');
+  const cmpBtn = S.companies.length >= 2
+    ? `<button onclick="goToCompare()" style="margin-left:4px;font-size:11px;padding:4px 11px;background:var(--gold);color:#fff;border:none;border-radius:100px;cursor:pointer;font-family:Arial,sans-serif;font-weight:600">⚖ Compare</button>`
+    : '';
+  document.getElementById('co-chips').innerHTML = chips + cmpBtn;
+  try { localStorage.setItem('lexbrief_companies', JSON.stringify(S.companies)); } catch {}
 }
 function addUrl() {
   const inp = document.getElementById('url-in');
@@ -575,8 +658,12 @@ function addUrl() {
   const d = document.createElement('div'); d.className='url-item';
   d.innerHTML=`<span>${v}</span><button class="url-del" onclick="removeUrl(this,'${esc(v)}')">×</button>`;
   document.getElementById('url-items').appendChild(d); inp.value='';
+  try { localStorage.setItem('lexbrief_urls', JSON.stringify(S.urls)); } catch {}
 }
-function removeUrl(btn, url) { S.urls=S.urls.filter(u=>u!==url); btn.closest('.url-item').remove(); }
+function removeUrl(btn, url) {
+  S.urls=S.urls.filter(u=>u!==url); btn.closest('.url-item').remove();
+  try { localStorage.setItem('lexbrief_urls', JSON.stringify(S.urls)); } catch {}
+}
 
 document.getElementById('kw-in').addEventListener('keydown', e=>{ if(e.key==='Enter') addKeyword(); });
 document.getElementById('co-in').addEventListener('keydown', e=>{ if(e.key==='Enter') addCompany(); });
@@ -810,7 +897,7 @@ Only include these topics: ${activeTopics.join(',')}.`;
 // RESEARCH HUB — SUB-NAVIGATION
 // ─────────────────────────────────────────────────────────────────────────────
 function showSubPanel(name, btn) {
-  ['archive','search','qa'].forEach(id => {
+  ['archive','search','qa','compare'].forEach(id => {
     document.getElementById('sub-' + id).classList.remove('active');
     document.getElementById('sub-btn-' + id).classList.remove('active');
   });
@@ -874,6 +961,105 @@ function renderSrcRow() {
   const tags = ['CourtListener', ...S.urls].map(s =>
     `<span class="badge" style="font-size:10px;gap:3px">🔗 ${s}</span>`).join('');
   row.innerHTML = `<span style="font-family:Arial,sans-serif;font-size:11px;color:var(--ink3)">Searching:</span>${tags}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPETITIVE ANALYSIS
+// ─────────────────────────────────────────────────────────────────────────────
+function goToCompare() {
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('nav-thoughts').classList.add('active');
+  document.getElementById('panel-thoughts').classList.add('active');
+  showSubPanel('compare', document.getElementById('sub-btn-compare'));
+  compareCompanies();
+}
+
+async function compareCompanies() {
+  if (S.companies.length < 2) {
+    document.getElementById('compare-hint').style.display = '';
+    document.getElementById('compare-spin').style.display = 'none';
+    document.getElementById('compare-out').style.display = 'none';
+    document.getElementById('compare-run-btn').style.display = 'none';
+    return;
+  }
+  document.getElementById('compare-hint').style.display = 'none';
+  document.getElementById('compare-spin').style.display = '';
+  document.getElementById('compare-out').style.display = 'none';
+  document.getElementById('compare-run-btn').style.display = 'none';
+  try {
+    const res = await fetch('/api/compare-companies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ companies: S.companies, urls: S.urls })
+    });
+    const data = await res.json();
+    document.getElementById('compare-spin').style.display = 'none';
+    document.getElementById('compare-run-btn').style.display = '';
+    if (data.error) {
+      document.getElementById('compare-out').style.display = '';
+      document.getElementById('compare-out').innerHTML = `<div style="color:#dc2626;font-family:Arial,sans-serif;font-size:13px;padding:8px 0">${data.error}</div>`;
+      return;
+    }
+    renderCompareResults(data.analysis, data.sources || {});
+  } catch(e) {
+    document.getElementById('compare-spin').style.display = 'none';
+    document.getElementById('compare-out').style.display = '';
+    document.getElementById('compare-out').innerHTML = `<div style="color:#dc2626;font-family:Arial,sans-serif;font-size:13px;padding:8px 0">Error: ${e.message}</div>`;
+  }
+}
+
+function renderCompareResults(analysis, sources) {
+  const out = document.getElementById('compare-out');
+  out.style.display = '';
+  const riskClass = { High:'risk-high', Medium:'risk-medium', Low:'risk-low' };
+  let html = '';
+
+  if (analysis.summary) {
+    html += `<div style="font-family:Georgia,serif;font-size:14px;line-height:1.7;color:var(--ink2);margin-bottom:1.25rem;padding:12px 14px;background:var(--accent-light);border-left:3px solid var(--accent);border-radius:0 var(--radius) var(--radius) 0">${analysis.summary}</div>`;
+  }
+  if (analysis.industryContext) {
+    html += `<div style="font-family:Arial,sans-serif;font-size:12px;color:var(--ink3);margin-bottom:1rem">Market: <strong style="color:var(--ink2)">${analysis.industryContext}</strong></div>`;
+  }
+
+  const companiesData = analysis.companies || {};
+  if (Object.keys(companiesData).length) {
+    html += `<div class="compare-grid">`;
+    for (const [name, d] of Object.entries(companiesData)) {
+      const rc = riskClass[d.riskLevel] || 'risk-medium';
+      html += `<div class="compare-card">
+        <div class="compare-card-head">
+          <strong style="font-family:Arial,sans-serif;font-size:13px;color:var(--ink)">🏢 ${name}</strong>
+          <span class="risk-badge ${rc}">${d.riskLevel || '?'} Risk</span>
+        </div>`;
+      if (d.regulatoryExposure) html += `<div style="font-family:Arial,sans-serif;font-size:11px;color:var(--ink3);margin-bottom:.5rem">${d.regulatoryExposure}</div>`;
+      if (d.keyRisks?.length) html += `<div class="compare-section"><div class="compare-section-label">Key Risks</div><ul class="compare-list">${d.keyRisks.map(r=>`<li>${r}</li>`).join('')}</ul></div>`;
+      if (d.legalAdvantages?.length) html += `<div class="compare-section"><div class="compare-section-label" style="color:#166534">Legal Advantages</div><ul class="compare-list">${d.legalAdvantages.map(a=>`<li style="color:#166534">${a}</li>`).join('')}</ul></div>`;
+      if (d.recentDevelopments?.length) html += `<div class="compare-section"><div class="compare-section-label">Recent Developments</div><ul class="compare-list">${d.recentDevelopments.map(x=>`<li>${x}</li>`).join('')}</ul></div>`;
+      html += `</div>`;
+    }
+    html += `</div>`;
+  }
+
+  if (analysis.industryTrends?.length) {
+    html += `<div style="margin-top:1.25rem"><div style="font-family:Arial,sans-serif;font-size:10px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Industry Regulatory Trends</div><ul style="list-style:none;padding:0;display:flex;flex-direction:column;gap:5px">${analysis.industryTrends.map(t=>`<li style="font-family:Arial,sans-serif;font-size:12px;color:var(--ink2);display:flex;gap:7px"><span style="color:var(--gold);flex-shrink:0">→</span>${t}</li>`).join('')}</ul></div>`;
+  }
+
+  if (analysis.comparativeVerdict) {
+    html += `<div style="margin-top:1.25rem;padding:12px 14px;background:var(--gold-light);border:1px solid #F0DFA0;border-radius:var(--radius)"><div style="font-family:Arial,sans-serif;font-size:10px;font-weight:700;color:var(--gold);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Verdict</div><div style="font-family:Georgia,serif;font-size:13px;color:#78580A;line-height:1.6">${analysis.comparativeVerdict}</div></div>`;
+  }
+
+  if (analysis.watchlist?.length) {
+    html += `<div style="margin-top:1rem"><div style="font-family:Arial,sans-serif;font-size:10px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Watch For</div><ul style="list-style:none;padding:0;display:flex;flex-direction:column;gap:4px">${analysis.watchlist.map(w=>`<li style="font-family:Arial,sans-serif;font-size:12px;color:var(--ink2);display:flex;gap:7px"><span>👁</span>${w}</li>`).join('')}</ul></div>`;
+  }
+
+  const newsCts = Object.entries(sources.news || {}).map(([c,a])=>`${c}: ${a.length} news`);
+  const caseCts = Object.entries(sources.cases || {}).map(([c,a])=>`${c}: ${a.length} cases`);
+  const secCts  = Object.entries(sources.sec   || {}).map(([c,a])=>`${c}: ${a.length} SEC filings`);
+  const allCts  = [...newsCts, ...caseCts, ...secCts];
+  if (allCts.length) html += `<div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--rule);font-family:Arial,sans-serif;font-size:11px;color:var(--ink3)">Sources used — ${allCts.join(' · ')}</div>`;
+
+  out.innerHTML = html;
 }
 
 async function searchStories() {

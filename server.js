@@ -236,6 +236,116 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// Competitive legal analysis: SEC EDGAR + CourtListener + user sources
+app.post('/api/compare-companies', async (req, res) => {
+  const { companies = [], urls = [] } = req.body;
+  if (companies.length < 2) return res.status(400).json({ error: 'Need at least 2 companies to compare.' });
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set.' });
+
+  // 1. News from user sources mentioning each company
+  const newsData = {};
+  for (const co of companies) {
+    const hits = [];
+    for (const domain of urls) {
+      try {
+        const arts = await fetchSiteArticles(domain);
+        hits.push(...arts.filter(a => a.title.toLowerCase().includes(co.toLowerCase())).slice(0, 3));
+      } catch {}
+    }
+    newsData[co] = hits.slice(0, 5);
+  }
+
+  // 2. CourtListener federal cases for each company
+  const caseData = {};
+  for (const co of companies) {
+    caseData[co] = await searchCourtListener(co);
+  }
+
+  // 3. SEC EDGAR recent filings for each company
+  const secData = {};
+  for (const co of companies) {
+    try {
+      const secRes = await fetch(
+        `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(co)}%22&forms=10-K,10-Q,8-K&dateRange=custom&startdt=2024-01-01`,
+        {
+          headers: { 'User-Agent': 'LexBrief/1.0 contact@lexbrief.app', 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(8000)
+        }
+      );
+      if (secRes.ok) {
+        const d = await secRes.json();
+        secData[co] = (d.hits?.hits || []).slice(0, 4).map(h => ({
+          form: h._source?.form_type || '',
+          date: h._source?.file_date || '',
+          company: (h._source?.display_names?.[0]?.name || co)
+        }));
+      }
+    } catch {}
+    if (!secData[co]) secData[co] = [];
+  }
+
+  // 4. Build context for Claude
+  let ctx = `Compare these companies from a LEGAL RISK AND REGULATORY ADVANTAGE perspective: ${companies.join(' vs. ')}\n\n`;
+  ctx += `Focus on how recent changes in law and regulations create competitive differences.\n\n`;
+
+  for (const co of companies) {
+    ctx += `## ${co}\n`;
+    if (newsData[co].length) ctx += `Recent legal news:\n${newsData[co].map(a => `- ${a.title}`).join('\n')}\n`;
+    if (caseData[co].length) ctx += `Court cases:\n${caseData[co].map(c => `- ${c.title} (${c.court}, ${c.date}): ${c.snippet}`).join('\n')}\n`;
+    if (secData[co].length) ctx += `SEC filings:\n${secData[co].map(s => `- ${s.form} (${s.date}): ${s.company}`).join('\n')}\n`;
+    ctx += '\n';
+  }
+
+  try {
+    const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 2000,
+        system: `You are a legal intelligence analyst specializing in competitive regulatory analysis. Compare companies by analyzing their regulatory exposure, litigation history, compliance advantages, IP position, and how recent legal/regulatory changes affect their competitive position.
+
+Respond ONLY as valid JSON (no markdown fences, no text outside the JSON object):
+{
+  "summary": "2-3 sentence overview of the competitive legal landscape",
+  "isCompetitors": true,
+  "industryContext": "What industry/market they compete in",
+  "companies": {
+    "COMPANY_NAME": {
+      "riskLevel": "High|Medium|Low",
+      "keyRisks": ["risk 1", "risk 2", "risk 3"],
+      "legalAdvantages": ["advantage 1", "advantage 2"],
+      "recentDevelopments": ["development 1", "development 2"],
+      "regulatoryExposure": "One sentence on main regulatory exposure"
+    }
+  },
+  "industryTrends": ["regulatory trend 1", "trend 2", "trend 3"],
+  "comparativeVerdict": "Which company has the stronger legal/regulatory position and why",
+  "watchlist": ["upcoming regulatory development to watch 1", "development 2"]
+}`,
+        messages: [{ role: 'user', content: ctx }]
+      }),
+      signal: AbortSignal.timeout(30000)
+    });
+
+    if (!claudeRes.ok) return res.status(500).json({ error: 'Claude API error.' });
+    const claudeData = await claudeRes.json();
+    const raw = (claudeData.content?.[0]?.text || '').trim();
+
+    try {
+      const m = raw.match(/\{[\s\S]*\}/);
+      const analysis = m ? JSON.parse(m[0]) : { summary: raw };
+      res.json({ analysis, sources: { news: newsData, cases: caseData, sec: secData } });
+    } catch {
+      res.json({ analysis: { summary: raw }, sources: {} });
+    }
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 const PORT = process.env.PORT || 3000;
