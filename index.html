@@ -13,6 +13,7 @@
   --tag-lit:#F0FDF4; --tag-lit-t:#166534;
   --tag-corp:#FDF4FF; --tag-corp-t:#6B21A8;
   --tag-biz:#ECFDF5; --tag-biz-t:#065F46;
+  --tag-foreign:#F1F5F9; --tag-foreign-t:#334155;
   --radius:8px;
   --shadow:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.04);
 }
@@ -84,6 +85,7 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
 .topic-tag[data-t="lit"] {background:var(--tag-lit); color:var(--tag-lit-t)}
 .topic-tag[data-t="corp"]{background:var(--tag-corp);color:var(--tag-corp-t)}
 .topic-tag[data-t="biz"] {background:var(--tag-biz); color:var(--tag-biz-t)}
+.topic-tag[data-t="foreign"] {background:var(--tag-foreign); color:var(--tag-foreign-t)}
 .divider{border:none;border-top:1px solid var(--rule);margin:1rem 0}
 .brief-section{margin-bottom:1.25rem}
 .brief-section:last-child{margin-bottom:0}
@@ -944,10 +946,11 @@ async function generateBriefing(retries = 1) {
   } catch(e) { /* proceed without real articles */ }
 
   const hasArticles = S.articles.length > 0;
+  const foreignInstr = ` Additionally, inspect the article list above by their (domain) prefix — if any domain's article titles are written in a language other than English, identify each such distinct language. For each one, write a 3-5 sentence summary paragraph, written ENTIRELY in that language, covering only the legal and business developments implied by that domain's titles, scoped to topics: ${topicNames}${activeSectors.length ? ' and business sectors: ' + activeSectors.join(', ') : ''}. Add one entry per distinct non-English language to a "foreignSummaries" array: {"language":"<language name in English, e.g. French>","text":"<summary written in that language>"}. If every source domain's titles are in English, return "foreignSummaries": [].`;
   const system = `You are a senior legal news analyst. Generate a concise daily legal briefing for ${today}. Topics: ${topicNames}.${kwExtra}${bizInstr}
-${hasArticles ? articleCtx + `\n\nUsing ONLY the articles listed above, write 2-3 bullet summaries per section. Each bullet MUST reference one article by its number using "ref": <integer>. Do NOT copy URLs into the JSON.` : 'No live articles available — generate a plausible briefing based on current legal trends. Omit "ref" from bullets.'}
+${hasArticles ? articleCtx + `\n\nUsing ONLY the articles listed above, write 2-3 bullet summaries per section. Each bullet MUST reference one article by its number using "ref": <integer>. Do NOT copy URLs into the JSON.${foreignInstr}` : 'No live articles available — generate a plausible briefing based on current legal trends. Omit "ref" from bullets.'}
 Reply ONLY in valid JSON, no markdown fences:
-{"sections":[{"topic":"ip","bullets":[{"text":"one-sentence summary of the article","ref":1}],"prose":"...","biz":[{"type":"opportunity","company":"","sector":"","text":"..."}]}]}
+{"sections":[{"topic":"ip","bullets":[{"text":"one-sentence summary of the article","ref":1}],"prose":"...","biz":[{"type":"opportunity","company":"","sector":"","text":"..."}]}],"foreignSummaries":[{"language":"French","text":"..."}]}
 Only include these topics: ${activeTopics.join(',')}.`;
 
   try {
@@ -994,6 +997,8 @@ Only include these topics: ${activeTopics.join(',')}.`;
       });
     });
 
+    const foreignSummaries = Array.isArray(parsed.foreignSummaries) ? parsed.foreignSummaries : [];
+
     // Build context string (include biz items per section)
     S.context = parsed.sections.map(s=>{
       const bullets = (s.bullets||[]).map(b=>typeof b==='string'?b:b.text);
@@ -1001,6 +1006,9 @@ Only include these topics: ${activeTopics.join(',')}.`;
       if (s.biz?.length) ctx += '\n' + s.biz.map(x=>`${x.type.toUpperCase()}${x.company?' ('+x.company+')':''}: ${x.text}`).join('\n');
       return ctx;
     }).join('\n\n');
+    if (foreignSummaries.length) {
+      S.context += '\n\n' + foreignSummaries.map(fs => `[${fs.language} Summary]\n${fs.text}`).join('\n\n');
+    }
 
     // Render sections with inline biz intel
     const renderBizItems = (items) => {
@@ -1046,6 +1054,15 @@ Only include these topics: ${activeTopics.join(',')}.`;
         </div>
       </div>`;
     }).join('');
+
+    if (foreignSummaries.length) {
+      out.innerHTML += foreignSummaries.map(fs => `
+        <div class="brief-section">
+          <hr class="divider">
+          <span class="topic-tag" data-t="foreign">${t('brief.foreign_summary_label', {lang: fs.language})}</span>
+          <p class="prose">${fs.text}</p>
+        </div>`).join('');
+    }
 
     // Save to archive
     const now = new Date();
@@ -1195,9 +1212,11 @@ async function runTrendAnalysis() {
     return;
   }
 
+  const KNOWN_LABELS = [...Object.values(TOPIC_META).map(m => m.label), ...Object.values(SECTOR_META)];
   const selectedLabels = S.trendConfig.topics;
   const blocks = inRange.flatMap(e => {
-    const ctxBlocks = (e.context || '').split('\n\n');
+    const ctxBlocks = (e.context || '').split('\n\n')
+      .filter(b => KNOWN_LABELS.some(l => b.startsWith('[' + l + ']')));
     return selectedLabels.length
       ? ctxBlocks.filter(b => selectedLabels.some(l => b.startsWith('[' + l + ']')))
       : ctxBlocks;
@@ -1722,6 +1741,7 @@ const I18N = {
     'brief.try_again': 'Try again',
     'brief.podcast': 'Podcast Summary',
     'brief.no_saved': 'No saved briefings yet. Generate your first briefing on the Today tab.',
+    'brief.foreign_summary_label': '🌐 Summary in {lang}',
     'archive.search_ph': 'Search archive by date, topic, or keyword…',
     'trend.title': 'Trend Analysis',
     'trend.desc': 'Analyze patterns across your saved briefings over a time period you choose. Leave all topics unselected to include everything.',
@@ -1847,6 +1867,7 @@ const I18N = {
     'brief.try_again': '다시 시도',
     'brief.podcast': '팟캐스트 요약',
     'brief.no_saved': '저장된 브리핑이 아직 없어요. Today 탭에서 첫 브리핑을 만들어보세요.',
+    'brief.foreign_summary_label': '🌐 {lang} 요약',
     'archive.search_ph': '날짜·토픽·키워드로 아카이브 검색…',
     'trend.title': '트렌드 분석',
     'trend.desc': '원하는 기간 동안 저장된 브리핑들의 패턴을 분석합니다. 토픽을 하나도 안 고르면 전체를 포함합니다.',
@@ -1972,6 +1993,7 @@ const I18N = {
     'brief.try_again': 'Reintentar',
     'brief.podcast': 'Resumen en Podcast',
     'brief.no_saved': 'Aún no hay resúmenes guardados. Genera tu primer resumen en la pestaña Hoy.',
+    'brief.foreign_summary_label': '🌐 Resumen en {lang}',
     'archive.search_ph': 'Buscar en el archivo por fecha, tema o palabra clave…',
     'trend.title': 'Análisis de Tendencias',
     'trend.desc': 'Analiza patrones en tus resúmenes guardados durante un período que elijas. Deja todos los temas sin seleccionar para incluirlos todos.',
@@ -2097,6 +2119,7 @@ const I18N = {
     'brief.try_again': 'Réessayer',
     'brief.podcast': 'Résumé Podcast',
     'brief.no_saved': "Aucun résumé enregistré pour l'instant. Générez votre premier résumé dans l'onglet Aujourd'hui.",
+    'brief.foreign_summary_label': '🌐 Résumé en {lang}',
     'archive.search_ph': 'Rechercher dans les archives par date, sujet ou mot-clé…',
     'trend.title': 'Analyse de Tendances',
     'trend.desc': 'Analysez les tendances de vos résumés enregistrés sur une période de votre choix. Ne sélectionnez aucun sujet pour tout inclure.',
@@ -2222,6 +2245,7 @@ const I18N = {
     'brief.try_again': '重试',
     'brief.podcast': '播客摘要',
     'brief.no_saved': '还没有保存的简报。请在"今日"标签生成您的第一份简报。',
+    'brief.foreign_summary_label': '🌐 {lang}摘要',
     'archive.search_ph': '按日期、主题或关键词搜索归档…',
     'trend.title': '趋势分析',
     'trend.desc': '分析您所选时间段内保存的简报中的模式。不选任何主题即包含全部内容。',
@@ -2347,6 +2371,7 @@ const I18N = {
     'brief.try_again': '再試行',
     'brief.podcast': 'ポッドキャスト要約',
     'brief.no_saved': 'まだ保存されたブリーフィングがありません。Todayタブで最初のブリーフィングを作成してください。',
+    'brief.foreign_summary_label': '🌐 {lang}要約',
     'archive.search_ph': '日付・トピック・キーワードでアーカイブを検索…',
     'trend.title': 'トレンド分析',
     'trend.desc': '選択した期間の保存済みブリーフィングのパターンを分析します。トピックを何も選ばなければ全体が対象になります。',
