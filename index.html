@@ -872,7 +872,6 @@ function restoreBriefing(entry) {
   document.getElementById('brief-ts').textContent       = 'Loaded ' + entry.time;
   document.getElementById('listen-btn').style.display   = 'inline-flex';
   S.context = entry.context || '';
-  document.getElementById('ctx-badge').textContent = `📰 Today's briefing loaded`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1086,7 +1085,6 @@ Only include these topics: ${activeTopics.join(',')}.`;
     document.getElementById('brief-ts').textContent       = 'Updated ' + entry.time;
     document.getElementById('listen-btn').style.display   = 'inline-flex';
     document.getElementById('audio-bar').style.display    = 'none'; // reset player on new briefing
-    document.getElementById('ctx-badge').textContent     = `📰 ${activeTopics.length * 3} items in context`;
 
   } catch(e) {
     if (retries > 0) {
