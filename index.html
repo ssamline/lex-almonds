@@ -403,6 +403,7 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
         <div id="archive-cards">
           <div class="hint">No saved briefings yet. Generate your first briefing on the Today tab.</div>
         </div>
+        <div id="archive-no-match" class="hint" style="display:none" data-i18n="archive.search_no_results">No briefings match your search.</div>
       </div>
 
     </div>
@@ -414,7 +415,6 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
       <div class="card" style="padding:0;overflow:hidden">
         <div class="sub-nav">
           <button class="sub-btn active" id="sub-btn-search"  onclick="showSubPanel('search',this)">🔍 <span data-i18n="personal.search_tab">Search Stories</span></button>
-          <button class="sub-btn" id="sub-btn-qa"      onclick="showSubPanel('qa',this)">⚖️ <span data-i18n="personal.qa_tab">Legal Q&amp;A</span></button>
           <button class="sub-btn" id="sub-btn-compare" onclick="showSubPanel('compare',this)">📊 <span data-i18n="personal.compare_tab">Compare</span></button>
         </div>
       </div>
@@ -434,32 +434,6 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
             <div id="search-results" class="result-list"></div>
           </div>
         </div>
-      </div>
-
-      <!-- (c) Legal Q&A -->
-      <div class="sub-panel" id="sub-qa">
-        <div class="card">
-          <div class="card-head">
-            <span class="card-title" data-i18n="personal.qa_tab">Legal Q&amp;A</span>
-            <div class="qa-ctx-bar">
-              <span id="ctx-badge" class="badge">📰 <span data-i18n="personal.no_briefing">No briefing loaded</span></span>
-              <button class="btn-ghost" style="font-size:11px;padding:4px 9px" onclick="showPanel('brief',document.getElementById('nav-brief'));showBriefView('archive',document.getElementById('brief-view-archive-btn'))" data-i18n="personal.load_from_archive">Load from archive</button>
-            </div>
-          </div>
-          <div class="card-body" style="padding:0">
-            <div class="chat-area" id="chat-area">
-              <div class="msg bot">
-                <div class="msg-bubble" data-i18n="personal.qa_welcome">Hello! I'm your legal research assistant. I can answer questions using your loaded briefing, your selected news sources, and CourtListener (free federal case law). Load a briefing from the Archive tab or just ask any legal question.</div>
-                <div class="msg-time" data-i18n="personal.now">Now</div>
-              </div>
-            </div>
-            <div class="chat-input-row">
-              <textarea class="chat-input" id="chat-input" data-i18n-ph="personal.qa_ph" placeholder="Ask a legal question…" rows="1" onkeydown="chatKey(event)"></textarea>
-              <button class="send-btn" id="send-btn" onclick="sendMessage()" data-i18n="personal.send">Send</button>
-            </div>
-          </div>
-        </div>
-        <div class="note">⚖️ <span data-i18n="personal.qa_note">Each question searches your news sources and <strong>CourtListener</strong> for relevant context before answering. Results are AI-synthesized — verify with primary sources.</span></div>
       </div>
 
       <!-- (d) Compare Companies -->
@@ -613,7 +587,6 @@ const S = {
   companies: [],
   urls:      ['natlawreview.com','complianceweek.com','abajournal.com','courthousenews.com','lawgazette.co.uk'],
   context:   '',
-  chatHist:  [],
   archive:   [],
   articles:  [],  // fetched news articles for current briefing [{topic,title,link,domain}]
   failedSources: [], // domains that returned zero articles on the last fetch
@@ -1134,7 +1107,7 @@ Only include these topics: ${activeTopics.join(',')}.`;
 // RESEARCH HUB — SUB-NAVIGATION
 // ─────────────────────────────────────────────────────────────────────────────
 function showSubPanel(name, btn) {
-  ['search','qa','compare'].forEach(id => {
+  ['search','compare'].forEach(id => {
     document.getElementById('sub-' + id).classList.remove('active');
     document.getElementById('sub-btn-' + id).classList.remove('active');
   });
@@ -1162,10 +1135,8 @@ function renderArchive() {
         <span id="arc-tog-${i}" style="font-family:Arial,sans-serif;font-size:11px;color:var(--ink3);flex-shrink:0">${t('common.expand')}</span>
       </div>
       <div class="arc-card-body" id="arc-body-${i}">${e.html}</div>
-      <div class="arc-card-footer">
-        <button class="btn-outline" onclick="loadArchiveToQA(${i})">${t('personal.use_in_qa')}</button>
-      </div>
     </div>`).join('');
+  filterArchive(document.getElementById('archive-search')?.value || '');
 }
 
 function toggleArcCard(idx) {
@@ -1177,12 +1148,18 @@ function toggleArcCard(idx) {
 
 function filterArchive(q) {
   q = q.trim().toLowerCase();
+  let matched = 0;
   document.querySelectorAll('#archive-cards .arc-card').forEach((card, i) => {
     const e = S.archive[i];
     if (!e) return;
-    const hay = `${e.date} ${e.topics} ${e.context || ''}`.toLowerCase();
-    card.style.display = (!q || hay.includes(q)) ? '' : 'none';
+    const articleTitles = (e.articles || []).map(a => a.title).join(' ');
+    const hay = `${e.date} ${e.topics} ${e.context || ''} ${articleTitles}`.toLowerCase();
+    const isMatch = !q || hay.includes(q);
+    card.style.display = isMatch ? '' : 'none';
+    if (isMatch) matched++;
   });
+  const noMatchEl = document.getElementById('archive-no-match');
+  if (noMatchEl) noMatchEl.style.display = (q && matched === 0 && S.archive.length > 0) ? 'block' : 'none';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1294,22 +1271,6 @@ Reply ONLY as valid JSON, no markdown fences:
     btn.disabled = false;
   }
 }
-
-function loadArchiveToQA(idx) {
-  const entry = S.archive[idx];
-  if (!entry) return;
-  showPanel('thoughts', document.getElementById('nav-thoughts'));
-  S.context  = entry.context || '';
-  S.articles = entry.articles || [];
-  S.chatHist = [];
-  document.getElementById('ctx-badge').textContent = `📰 ${entry.date} · ${entry.time}`;
-  const area = document.getElementById('chat-area');
-  area.innerHTML = '';
-  addMsg('bot', `Briefing from ${entry.date} loaded (${entry.topics}). Ask me anything about it, or any broader legal question — I'll also search CourtListener and your news sources.`);
-  showSubPanel('qa', document.getElementById('sub-btn-qa'));
-}
-
-function loadArchive(idx) { loadArchiveToQA(idx); } // backwards compat
 
 // ─────────────────────────────────────────────────────────────────────────────
 // (b) SEARCH STORIES
@@ -1461,89 +1422,6 @@ function renderSearchResults(results) {
   }).join('');
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// (c) LEGAL Q&A
-// ─────────────────────────────────────────────────────────────────────────────
-function chatKey(e) { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();} }
-function ts() { return new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }
-
-function addMsg(role, text) {
-  const area = document.getElementById('chat-area');
-  const d = document.createElement('div');
-  d.className = 'msg ' + role;
-  d.innerHTML = `<div class="msg-bubble">${text.replace(/\n/g,'<br>')}</div><div class="msg-time">${ts()}</div>`;
-  area.appendChild(d);
-  area.scrollTop = area.scrollHeight;
-  return d;
-}
-
-function renderLinks(text) {
-  return text
-    .replace(/\n/g, '<br>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
-      '<a href="$2" target="_blank" rel="noopener" style="color:var(--accent)">$1</a>');
-}
-
-async function sendMessage() {
-  const inp = document.getElementById('chat-input');
-  const q   = inp.value.trim(); if (!q) return;
-  inp.value = '';
-  document.getElementById('send-btn').disabled = true;
-
-  addMsg('user', q);
-  S.chatHist.push({ role: 'user', content: q });
-  const loader = addMsg('bot', '<span class="spinner dark"></span>');
-
-  // Fetch legal context: CourtListener + user news sources
-  let legalCtx   = '';
-  const srcUsed  = [];
-  try {
-    const sr   = await fetch('/api/legal-search', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: q, urls: S.urls })
-    });
-    const sd = await sr.json();
-    if (sd.cases?.length) {
-      srcUsed.push('CourtListener');
-      legalCtx += '\n\nRelevant court cases (CourtListener):\n' +
-        sd.cases.map(c => `- ${c.title}${c.court?' ('+c.court+')':''}${c.date?', '+c.date:''}: ${c.snippet}\n  URL: ${c.url}`).join('\n');
-    }
-    if (sd.articles?.length) {
-      sd.articles.forEach(a => { if(!srcUsed.includes(a.domain)) srcUsed.push(a.domain); });
-      legalCtx += '\n\nRelevant news articles:\n' +
-        sd.articles.map(a => `- ${a.title} (${a.domain})\n  URL: ${a.link}`).join('\n');
-    }
-  } catch {}
-
-  const briefCtx = S.context ? `\n\nLoaded briefing:\n${S.context}` : '';
-  if (S.context) srcUsed.unshift('Briefing');
-
-  const system = `You are a senior legal research assistant. Answer questions with precision, citing specific cases, statutes, and sources. When you have a URL for a source, format it as [Source Name](URL) so it becomes a clickable link.${briefCtx}${legalCtx}
-
-Be concise but thorough. If information comes from CourtListener or a news source, note it. Distinguish between what the briefing says and what case law says.`;
-
-  try {
-    const res  = await fetch('/api/chat', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1200, system, messages: S.chatHist })
-    });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error.message);
-    const reply = data.content.map(b => b.text || '').join('');
-    S.chatHist.push({ role: 'assistant', content: reply });
-    loader.querySelector('.msg-bubble').innerHTML = renderLinks(reply);
-    if (srcUsed.length) {
-      const div = document.createElement('div');
-      div.className = 'msg-sources';
-      div.innerHTML = 'Sources consulted: ' + srcUsed.map(s => `<span class="src-pill">${s}</span>`).join('');
-      loader.appendChild(div);
-    }
-  } catch(e) {
-    loader.querySelector('.msg-bubble').textContent = 'Error — ' + e.message;
-  }
-  document.getElementById('chat-area').scrollTop = 9999;
-  document.getElementById('send-btn').disabled = false;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PODCAST LISTEN (OpenAI TTS)
@@ -1768,6 +1646,7 @@ const I18N = {
     'brief.source_failed_title': "Some sources didn't return articles today:",
     'brief.source_failed_try': '{domain} — try {suggestion} instead',
     'archive.search_ph': 'Search archive by date, topic, or keyword…',
+    'archive.search_no_results': 'No briefings match your search.',
     'trend.title': 'Trend Analysis',
     'trend.desc': 'Analyze patterns across your saved briefings over a time period you choose. Leave all topics unselected to include everything.',
     'trend.last7': 'Last 7 days',
@@ -1784,14 +1663,6 @@ const I18N = {
     'personal.search_ph': 'e.g. GDPR enforcement, patent infringement, SEC…',
     'personal.search_btn': 'Search',
     'personal.searching': 'Searching…',
-    'personal.qa_tab': 'Legal Q&A',
-    'personal.no_briefing': 'No briefing loaded',
-    'personal.load_from_archive': 'Load from archive',
-    'personal.qa_welcome': "Hello! I'm your legal research assistant. I can answer questions using your loaded briefing, your selected news sources, and CourtListener (free federal case law). Load a briefing from the Archive tab or just ask any legal question.",
-    'personal.now': 'Now',
-    'personal.qa_ph': 'Ask a legal question…',
-    'personal.send': 'Send',
-    'personal.qa_note': 'Each question searches your news sources and <strong>CourtListener</strong> for relevant context before answering. Results are AI-synthesized — verify with primary sources.',
     'personal.compare_tab': 'Compare',
     'personal.compare_title': 'Competitive Legal Analysis',
     'personal.refresh': 'Refresh',
@@ -1826,7 +1697,6 @@ const I18N = {
     'common.fetching_article': 'Fetching article…',
     'common.expand': '▼ Expand',
     'common.collapse': '▲ Collapse',
-    'personal.use_in_qa': 'Use in Legal Q&A →',
     'settings.legal_topics': 'Legal Topics',
     'settings.legal_topics_desc': 'Toggle topics and add custom keywords. These shape your daily briefing.',
     'settings.keyword_ph': 'Add keyword (e.g. antitrust, GDPR, SEC enforcement…)',
@@ -1896,6 +1766,7 @@ const I18N = {
     'brief.source_failed_title': '오늘 일부 소스에서 기사를 못 가져왔어요:',
     'brief.source_failed_try': '{domain} — 대신 {suggestion} 시도해보세요',
     'archive.search_ph': '날짜·토픽·키워드로 아카이브 검색…',
+    'archive.search_no_results': '검색어와 일치하는 브리핑이 없어요.',
     'trend.title': '트렌드 분석',
     'trend.desc': '원하는 기간 동안 저장된 브리핑들의 패턴을 분석합니다. 토픽을 하나도 안 고르면 전체를 포함합니다.',
     'trend.last7': '지난 7일',
@@ -1912,14 +1783,6 @@ const I18N = {
     'personal.search_ph': '예: GDPR 집행, 특허 침해, SEC…',
     'personal.search_btn': '검색',
     'personal.searching': '검색 중…',
-    'personal.qa_tab': '법률 Q&A',
-    'personal.no_briefing': '불러온 브리핑 없음',
-    'personal.load_from_archive': '아카이브에서 불러오기',
-    'personal.qa_welcome': '안녕하세요! 저는 법률 리서치 어시스턴트입니다. 불러온 브리핑, 선택한 뉴스 소스, CourtListener(무료 연방 판례)를 활용해 질문에 답할 수 있어요. Archive 탭에서 브리핑을 불러오거나 아무 법률 질문이나 해보세요.',
-    'personal.now': '방금',
-    'personal.qa_ph': '법률 질문을 입력하세요…',
-    'personal.send': '전송',
-    'personal.qa_note': '질문마다 뉴스 소스와 <strong>CourtListener</strong>에서 관련 맥락을 찾아 답합니다. 결과는 AI가 종합한 것이니 원문으로 다시 확인하세요.',
     'personal.compare_tab': '비교',
     'personal.compare_title': '경쟁사 법률 분석',
     'personal.refresh': '새로고침',
@@ -1954,7 +1817,6 @@ const I18N = {
     'common.fetching_article': '기사를 불러오는 중…',
     'common.expand': '▼ 펼치기',
     'common.collapse': '▲ 접기',
-    'personal.use_in_qa': 'Legal Q&A에서 사용 →',
     'settings.legal_topics': '법률 토픽',
     'settings.legal_topics_desc': '토픽을 켜고 끄거나 키워드를 추가하세요. 데일리 브리핑에 반영됩니다.',
     'settings.keyword_ph': '키워드 추가 (예: 반독점, GDPR, SEC 집행…)',
@@ -2024,6 +1886,7 @@ const I18N = {
     'brief.source_failed_title': 'Algunas fuentes no devolvieron artículos hoy:',
     'brief.source_failed_try': '{domain} — prueba con {suggestion} en su lugar',
     'archive.search_ph': 'Buscar en el archivo por fecha, tema o palabra clave…',
+    'archive.search_no_results': 'Ningún resumen coincide con tu búsqueda.',
     'trend.title': 'Análisis de Tendencias',
     'trend.desc': 'Analiza patrones en tus resúmenes guardados durante un período que elijas. Deja todos los temas sin seleccionar para incluirlos todos.',
     'trend.last7': 'Últimos 7 días',
@@ -2040,14 +1903,6 @@ const I18N = {
     'personal.search_ph': 'ej. cumplimiento de GDPR, infracción de patentes, SEC…',
     'personal.search_btn': 'Buscar',
     'personal.searching': 'Buscando…',
-    'personal.qa_tab': 'Preguntas Legales',
-    'personal.no_briefing': 'Ningún resumen cargado',
-    'personal.load_from_archive': 'Cargar desde el archivo',
-    'personal.qa_welcome': '¡Hola! Soy tu asistente de investigación legal. Puedo responder preguntas usando tu resumen cargado, tus fuentes de noticias seleccionadas y CourtListener (jurisprudencia federal gratuita). Carga un resumen desde la pestaña Archivo o simplemente haz cualquier pregunta legal.',
-    'personal.now': 'Ahora',
-    'personal.qa_ph': 'Haz una pregunta legal…',
-    'personal.send': 'Enviar',
-    'personal.qa_note': 'Cada pregunta busca en tus fuentes de noticias y en <strong>CourtListener</strong> el contexto relevante antes de responder. Los resultados son generados por IA — verifica con fuentes primarias.',
     'personal.compare_tab': 'Comparar',
     'personal.compare_title': 'Análisis Legal Competitivo',
     'personal.refresh': 'Actualizar',
@@ -2082,7 +1937,6 @@ const I18N = {
     'common.fetching_article': 'Obteniendo artículo…',
     'common.expand': '▼ Expandir',
     'common.collapse': '▲ Contraer',
-    'personal.use_in_qa': 'Usar en Preguntas Legales →',
     'settings.legal_topics': 'Temas Legales',
     'settings.legal_topics_desc': 'Activa temas y agrega palabras clave personalizadas. Estos definen tu resumen diario.',
     'settings.keyword_ph': 'Agregar palabra clave (ej. antimonopolio, GDPR, aplicación de la SEC…)',
@@ -2152,6 +2006,7 @@ const I18N = {
     'brief.source_failed_title': "Certaines sources n'ont renvoyé aucun article aujourd'hui :",
     'brief.source_failed_try': '{domain} — essayez {suggestion} à la place',
     'archive.search_ph': 'Rechercher dans les archives par date, sujet ou mot-clé…',
+    'archive.search_no_results': 'Aucun résumé ne correspond à votre recherche.',
     'trend.title': 'Analyse de Tendances',
     'trend.desc': 'Analysez les tendances de vos résumés enregistrés sur une période de votre choix. Ne sélectionnez aucun sujet pour tout inclure.',
     'trend.last7': '7 derniers jours',
@@ -2168,14 +2023,6 @@ const I18N = {
     'personal.search_ph': 'ex. application du RGPD, contrefaçon de brevet, SEC…',
     'personal.search_btn': 'Rechercher',
     'personal.searching': 'Recherche en cours…',
-    'personal.qa_tab': 'Questions Juridiques',
-    'personal.no_briefing': 'Aucun résumé chargé',
-    'personal.load_from_archive': 'Charger depuis les archives',
-    'personal.qa_welcome': "Bonjour ! Je suis votre assistant de recherche juridique. Je peux répondre à des questions en utilisant votre résumé chargé, vos sources d'actualités sélectionnées et CourtListener (jurisprudence fédérale gratuite). Chargez un résumé depuis l'onglet Archives ou posez simplement une question juridique.",
-    'personal.now': 'Maintenant',
-    'personal.qa_ph': 'Posez une question juridique…',
-    'personal.send': 'Envoyer',
-    'personal.qa_note': "Chaque question recherche dans vos sources d'actualités et sur <strong>CourtListener</strong> le contexte pertinent avant de répondre. Les résultats sont synthétisés par IA — vérifiez avec des sources primaires.",
     'personal.compare_tab': 'Comparer',
     'personal.compare_title': 'Analyse Juridique Concurrentielle',
     'personal.refresh': 'Actualiser',
@@ -2210,7 +2057,6 @@ const I18N = {
     'common.fetching_article': "Récupération de l'article…",
     'common.expand': '▼ Développer',
     'common.collapse': '▲ Réduire',
-    'personal.use_in_qa': 'Utiliser dans Questions Juridiques →',
     'settings.legal_topics': 'Sujets Juridiques',
     'settings.legal_topics_desc': 'Activez des sujets et ajoutez des mots-clés personnalisés. Ils façonnent votre résumé quotidien.',
     'settings.keyword_ph': 'Ajouter un mot-clé (ex. antitrust, RGPD, application SEC…)',
@@ -2280,6 +2126,7 @@ const I18N = {
     'brief.source_failed_title': '今天部分来源没有返回文章：',
     'brief.source_failed_try': '{domain} — 请尝试改用 {suggestion}',
     'archive.search_ph': '按日期、主题或关键词搜索归档…',
+    'archive.search_no_results': '没有符合搜索条件的简报。',
     'trend.title': '趋势分析',
     'trend.desc': '分析您所选时间段内保存的简报中的模式。不选任何主题即包含全部内容。',
     'trend.last7': '最近7天',
@@ -2296,14 +2143,6 @@ const I18N = {
     'personal.search_ph': '例如：GDPR执法、专利侵权、SEC…',
     'personal.search_btn': '搜索',
     'personal.searching': '搜索中…',
-    'personal.qa_tab': '法律问答',
-    'personal.no_briefing': '未加载简报',
-    'personal.load_from_archive': '从归档加载',
-    'personal.qa_welcome': '您好！我是您的法律研究助手。我可以利用您加载的简报、所选新闻来源以及CourtListener(免费联邦判例)来回答问题。请从归档标签加载简报，或直接提出任何法律问题。',
-    'personal.now': '刚刚',
-    'personal.qa_ph': '输入法律问题…',
-    'personal.send': '发送',
-    'personal.qa_note': '每个问题在回答前都会在您的新闻来源和<strong>CourtListener</strong>中搜索相关背景。结果由AI综合生成——请通过原始来源核实。',
     'personal.compare_tab': '比较',
     'personal.compare_title': '竞争法律分析',
     'personal.refresh': '刷新',
@@ -2338,7 +2177,6 @@ const I18N = {
     'common.fetching_article': '正在获取文章…',
     'common.expand': '▼ 展开',
     'common.collapse': '▲ 收起',
-    'personal.use_in_qa': '在法律问答中使用 →',
     'settings.legal_topics': '法律主题',
     'settings.legal_topics_desc': '切换主题并添加自定义关键词。这些将影响您的每日简报。',
     'settings.keyword_ph': '添加关键词(例如：反垄断、GDPR、SEC执法…)',
@@ -2408,6 +2246,7 @@ const I18N = {
     'brief.source_failed_title': '本日、一部のソースから記事を取得できませんでした：',
     'brief.source_failed_try': '{domain} — 代わりに{suggestion}をお試しください',
     'archive.search_ph': '日付・トピック・キーワードでアーカイブを検索…',
+    'archive.search_no_results': '検索条件に一致するブリーフィングがありません。',
     'trend.title': 'トレンド分析',
     'trend.desc': '選択した期間の保存済みブリーフィングのパターンを分析します。トピックを何も選ばなければ全体が対象になります。',
     'trend.last7': '過去7日間',
@@ -2424,14 +2263,6 @@ const I18N = {
     'personal.search_ph': '例：GDPR執行、特許侵害、SEC…',
     'personal.search_btn': '検索',
     'personal.searching': '検索中…',
-    'personal.qa_tab': 'リーガルQ&A',
-    'personal.no_briefing': 'ブリーフィング未読み込み',
-    'personal.load_from_archive': 'アーカイブから読み込む',
-    'personal.qa_welcome': 'こんにちは！法律リサーチアシスタントです。読み込んだブリーフィング、選択したニュースソース、CourtListener(無料の連邦判例)を使って質問にお答えします。Archiveタブからブリーフィングを読み込むか、どんな法律の質問でもどうぞ。',
-    'personal.now': 'たった今',
-    'personal.qa_ph': '法律に関する質問を入力…',
-    'personal.send': '送信',
-    'personal.qa_note': '各質問はニュースソースと<strong>CourtListener</strong>から関連コンテキストを検索してから回答します。結果はAIによる統合です — 一次情報でご確認ください。',
     'personal.compare_tab': '比較',
     'personal.compare_title': '競合法務分析',
     'personal.refresh': '更新',
@@ -2466,7 +2297,6 @@ const I18N = {
     'common.fetching_article': '記事を取得中…',
     'common.expand': '▼ 展開',
     'common.collapse': '▲ 折りたたむ',
-    'personal.use_in_qa': 'リーガルQ&Aで使う →',
     'settings.legal_topics': '法律トピック',
     'settings.legal_topics_desc': 'トピックを切り替えたり、カスタムキーワードを追加します。デイリーブリーフィングに反映されます。',
     'settings.keyword_ph': 'キーワードを追加(例：独占禁止、GDPR、SEC執行…)',
