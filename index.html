@@ -30,19 +30,9 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
 
 /* ── Nav ── */
 .nav{display:flex;background:var(--white);border-bottom:1px solid var(--rule);padding:0 1.5rem}
-.nav-btn{font-family:Arial,sans-serif;font-size:13px;font-weight:500;color:var(--ink3);padding:14px 18px;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;letter-spacing:.02em;display:flex;align-items:center;gap:6px;transition:color .15s;white-space:nowrap;text-decoration:none}
+.nav-btn{font-family:Arial,sans-serif;font-size:13px;font-weight:500;color:var(--ink3);padding:14px 18px;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;letter-spacing:.02em;display:flex;align-items:center;gap:6px;transition:color .15s;white-space:nowrap}
 .nav-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
 .nav-btn:hover:not(.active){color:var(--ink2)}
-
-@media (max-width:600px){
-  .nav{padding:0 .5rem;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
-  .nav::-webkit-scrollbar{display:none}
-  .nav-btn{padding:12px 10px;font-size:12px;gap:4px}
-}
-@media (max-width:420px){
-  .nav-btn span{display:none}
-  .nav-btn{padding:12px 14px;font-size:16px}
-}
 
 /* ── Layout ── */
 .main{flex:1;padding:1.5rem;display:flex;flex-direction:column;gap:1.25rem}
@@ -341,7 +331,6 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
     <button class="nav-btn"        id="nav-thoughts"  onclick="showPanel('thoughts',this)">🛠 <span data-i18n="nav.personal">Personal Tool</span></button>
     <button class="nav-btn"        id="nav-sharing"   onclick="showPanel('sharing',this)" >💬 <span data-i18n="nav.sharing">Sharing Thoughts</span></button>
     <button class="nav-btn"        id="nav-settings"  onclick="showPanel('settings',this)">⚙ <span data-i18n="nav.settings">Sources &amp; Topics</span></button>
-    <a   class="nav-btn"        id="nav-research"  href="/research/index.html">🔎 <span data-i18n="nav.research">Research</span></a>
   </div>
 
   <div class="main">
@@ -443,6 +432,35 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
             <div id="search-src-row" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;align-items:center"></div>
             <div id="search-spin" style="display:none;margin-top:8px" class="hint"><span class="spinner dark"></span>&nbsp;<span data-i18n="personal.searching">Searching…</span></div>
             <div id="search-results" class="result-list"></div>
+          </div>
+        </div>
+
+        <!-- Direct story research: paste a URL or upload an image, then pick a research type -->
+        <div class="card">
+          <div class="card-head"><span class="card-title">🔬 <span data-i18n="personal.research_title">Research a Story</span></span></div>
+          <div class="card-body">
+            <p style="font-family:Arial,sans-serif;font-size:13px;color:var(--ink3);margin-bottom:12px" data-i18n="personal.research_desc">Paste a story's link or upload an image, then choose what kind of research you want.</p>
+            <div class="url-input-row">
+              <input id="research-url-input" type="text" data-i18n-ph="personal.research_url_ph" placeholder="https://example.com/article…" oninput="handleResearchUrlInput()">
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;margin:10px 0">
+              <div style="flex:1;height:1px;background:var(--rule)"></div>
+              <span style="font-family:Arial,sans-serif;font-size:11px;color:var(--ink3)" data-i18n="personal.research_or">or</span>
+              <div style="flex:1;height:1px;background:var(--rule)"></div>
+            </div>
+            <input id="research-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onchange="handleResearchImageInput(this)" style="font-family:Arial,sans-serif;font-size:12px">
+            <div id="research-image-preview" style="display:none;margin-top:10px">
+              <img id="research-image-thumb" style="max-width:160px;max-height:160px;border-radius:6px;border:1px solid var(--rule)">
+            </div>
+
+            <div id="research-type-row" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--rule);align-items:center;flex-wrap:wrap;gap:8px">
+              <button class="btn-outline" id="research-summary-btn" onclick="runStoryResearch('summary')" data-i18n="personal.research_summary_btn">📝 Summary</button>
+              <button class="btn-outline" id="research-impact-btn" onclick="runStoryResearch('impact')" style="display:none" data-i18n="personal.research_impact_btn">📊 Impact on my companies/industries</button>
+              <span id="research-impact-hint" class="hint" style="display:none;padding:0;text-align:left" data-i18n="personal.research_impact_hint">Add a tracked company or business sector in Sources &amp; Topics first.</span>
+              <button class="btn-ghost" onclick="resetStoryResearch()" data-i18n="personal.research_reset">✕ Reset</button>
+            </div>
+            <div id="research-spin" style="display:none;margin-top:10px" class="hint"><span class="spinner dark"></span>&nbsp;<span data-i18n="personal.research_running">Researching…</span></div>
+            <div id="research-result" style="margin-top:12px"></div>
           </div>
         </div>
       </div>
@@ -1426,11 +1444,139 @@ function renderSearchResults(results) {
       <span class="result-title" onclick="openArticle('${safeUrl}','${safeTtl}')">${r.title || 'Untitled'}</span>
       <div class="result-meta">${[r.source||r.domain||'', r.court||'', r.date||''].filter(Boolean).join(' · ')}</div>
       ${r.snippet ? `<div class="result-snippet">${r.snippet}</div>` : ''}
-      <a href="${r.url}" target="_blank" rel="noopener" style="font-family:Arial,sans-serif;font-size:11px;color:var(--accent);text-decoration:none">Open original ↗</a>
+      <div style="display:flex;gap:14px">
+        <a href="${r.url}" target="_blank" rel="noopener" style="font-family:Arial,sans-serif;font-size:11px;color:var(--accent);text-decoration:none">Open original ↗</a>
+        <a onclick="prefillResearch('${safeUrl}')" style="font-family:Arial,sans-serif;font-size:11px;color:var(--accent);text-decoration:none;cursor:pointer" data-i18n="personal.research_this">🔬 Research this</a>
+      </div>
     </div>`;
   }).join('');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// STORY RESEARCH — paste a URL or upload an image, pick a research type
+// ─────────────────────────────────────────────────────────────────────────────
+const RESEARCH = { image: null }; // { data: base64, mediaType } while an image is loaded
+
+function activeSectorLabels() {
+  return Object.entries(S.sectors).filter(([,v])=>v).map(([k])=>SECTOR_META[k]||k);
+}
+
+function updateResearchTypeRow() {
+  const hasSource = !!document.getElementById('research-url-input').value.trim() || !!RESEARCH.image;
+  document.getElementById('research-type-row').style.display = hasSource ? 'flex' : 'none';
+  if (!hasSource) return;
+  const hasTargets = S.companies.length > 0 || activeSectorLabels().length > 0;
+  document.getElementById('research-impact-btn').style.display  = hasTargets ? 'inline-flex' : 'none';
+  document.getElementById('research-impact-hint').style.display = hasTargets ? 'none' : 'inline';
+}
+
+function handleResearchUrlInput() {
+  const url = document.getElementById('research-url-input').value.trim();
+  if (url) {
+    RESEARCH.image = null;
+    document.getElementById('research-image-input').value = '';
+    document.getElementById('research-image-preview').style.display = 'none';
+  }
+  updateResearchTypeRow();
+}
+
+function handleResearchImageInput(inputEl) {
+  const file = inputEl.files?.[0];
+  if (!file) return;
+  if (file.size > 5 * 1024 * 1024) {
+    alert('Image too large (5MB limit).');
+    inputEl.value = '';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const [, mediaType, base64] = String(reader.result).match(/^data:([^;]+);base64,(.*)$/) || [];
+    if (!base64) return;
+    RESEARCH.image = { data: base64, mediaType };
+    document.getElementById('research-url-input').value = '';
+    document.getElementById('research-image-thumb').src = reader.result;
+    document.getElementById('research-image-preview').style.display = 'block';
+    updateResearchTypeRow();
+  };
+  reader.readAsDataURL(file);
+}
+
+function prefillResearch(url) {
+  document.getElementById('research-url-input').value = url;
+  RESEARCH.image = null;
+  document.getElementById('research-image-input').value = '';
+  document.getElementById('research-image-preview').style.display = 'none';
+  updateResearchTypeRow();
+  document.getElementById('research-url-input').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function resetStoryResearch() {
+  document.getElementById('research-url-input').value = '';
+  document.getElementById('research-image-input').value = '';
+  RESEARCH.image = null;
+  document.getElementById('research-image-preview').style.display = 'none';
+  document.getElementById('research-type-row').style.display = 'none';
+  document.getElementById('research-result').innerHTML = '';
+}
+
+async function runStoryResearch(researchType) {
+  const url  = document.getElementById('research-url-input').value.trim();
+  const body = { researchType, companies: S.companies, sectors: activeSectorLabels() };
+  if (RESEARCH.image) body.image = RESEARCH.image;
+  else if (url) body.url = url;
+  else return;
+
+  const summaryBtn = document.getElementById('research-summary-btn');
+  const impactBtn  = document.getElementById('research-impact-btn');
+  summaryBtn.disabled = true;
+  impactBtn.disabled  = true;
+  document.getElementById('research-spin').style.display = 'block';
+  document.getElementById('research-result').innerHTML   = '';
+
+  try {
+    const res  = await fetch('/api/story-research', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || `Server error ${res.status}`);
+    renderStoryResearchResult(data.researchType, data.result, data.sourceTitle);
+  } catch (e) {
+    document.getElementById('research-result').innerHTML = `<div class="hint" style="color:#dc2626">${e.message}</div>`;
+  } finally {
+    summaryBtn.disabled = false;
+    impactBtn.disabled  = false;
+    document.getElementById('research-spin').style.display = 'none';
+  }
+}
+
+function renderStoryResearchResult(researchType, result, sourceTitle) {
+  const el = document.getElementById('research-result');
+  const srcLine = sourceTitle ? `<div style="font-family:Arial,sans-serif;font-size:11px;color:var(--ink3);margin-bottom:8px">${sourceTitle}</div>` : '';
+
+  if (researchType === 'summary') {
+    el.innerHTML = `<div class="biz-card">
+      ${srcLine}
+      ${result.headline ? `<div style="font-family:Georgia,serif;font-size:15px;font-weight:600;color:var(--ink);margin-bottom:8px">${result.headline}</div>` : ''}
+      ${result.summary ? `<p style="font-family:Georgia,serif;font-size:14px;line-height:1.7;color:var(--ink2);margin-bottom:12px">${result.summary}</p>` : ''}
+      ${result.keyPoints?.length ? `<ul class="compare-list">${result.keyPoints.map(p=>`<li>${p}</li>`).join('')}</ul>` : ''}
+    </div>`;
+    return;
+  }
+
+  const riskClass = { High:'risk-high', Medium:'risk-medium', Low:'risk-low', None:'risk-low' };
+  const impactsHtml = (result.impacts || []).map(im => `
+    <div class="compare-card">
+      <div class="compare-card-head">
+        <strong style="font-family:Arial,sans-serif;font-size:13px;color:var(--ink)">🏢 ${im.target || ''}</strong>
+        <span class="risk-badge ${riskClass[im.riskLevel]||'risk-medium'}">${im.riskLevel || '?'}</span>
+      </div>
+      <p style="font-family:Georgia,serif;font-size:13px;color:var(--ink2);line-height:1.6;margin-top:6px">${im.impact || ''}</p>
+    </div>`).join('');
+  el.innerHTML = `${srcLine}
+    ${result.summary ? `<p style="font-family:Georgia,serif;font-size:14px;line-height:1.7;color:var(--ink2);margin-bottom:12px">${result.summary}</p>` : ''}
+    ${impactsHtml ? `<div class="compare-grid">${impactsHtml}</div>` : ''}`;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PODCAST LISTEN (OpenAI TTS)
@@ -1641,7 +1787,6 @@ const I18N = {
     'nav.personal': 'Personal Tool',
     'nav.sharing': 'Sharing Thoughts',
     'nav.settings': 'Sources & Topics',
-    'nav.research': 'Research',
     'brief.today_tab': 'Today',
     'brief.archive_tab': 'Archive',
     'brief.title': 'Daily Briefing',
@@ -1673,6 +1818,16 @@ const I18N = {
     'personal.search_ph': 'e.g. GDPR enforcement, patent infringement, SEC…',
     'personal.search_btn': 'Search',
     'personal.searching': 'Searching…',
+    'personal.research_title': 'Research a Story',
+    'personal.research_desc': "Paste a story's link or upload an image, then choose what kind of research you want.",
+    'personal.research_url_ph': 'https://example.com/article…',
+    'personal.research_or': 'or',
+    'personal.research_summary_btn': '📝 Summary',
+    'personal.research_impact_btn': '📊 Impact on my companies/industries',
+    'personal.research_impact_hint': 'Add a tracked company or business sector in Sources & Topics first.',
+    'personal.research_reset': '✕ Reset',
+    'personal.research_running': 'Researching…',
+    'personal.research_this': '🔬 Research this',
     'personal.compare_tab': 'Compare',
     'personal.compare_title': 'Competitive Legal Analysis',
     'personal.refresh': 'Refresh',
@@ -1762,7 +1917,6 @@ const I18N = {
     'nav.personal': '개인 도구',
     'nav.sharing': '공유 의견',
     'nav.settings': '소스 & 토픽',
-    'nav.research': '리서치',
     'brief.today_tab': '오늘',
     'brief.archive_tab': '아카이브',
     'brief.title': '데일리 브리핑',
@@ -1794,6 +1948,16 @@ const I18N = {
     'personal.search_ph': '예: GDPR 집행, 특허 침해, SEC…',
     'personal.search_btn': '검색',
     'personal.searching': '검색 중…',
+    'personal.research_title': '스토리 직접 조사',
+    'personal.research_desc': '스토리 링크를 붙여넣거나 이미지를 올리면 어떤 조사를 할지 선택할 수 있어요.',
+    'personal.research_url_ph': 'https://example.com/article…',
+    'personal.research_or': '또는',
+    'personal.research_summary_btn': '📝 요약',
+    'personal.research_impact_btn': '📊 내 기업/산업 영향 조사',
+    'personal.research_impact_hint': 'Sources & Topics에서 추적 기업이나 업종을 먼저 추가하세요.',
+    'personal.research_reset': '✕ 초기화',
+    'personal.research_running': '조사 중…',
+    'personal.research_this': '🔬 이 스토리 조사하기',
     'personal.compare_tab': '비교',
     'personal.compare_title': '경쟁사 법률 분석',
     'personal.refresh': '새로고침',
@@ -1883,7 +2047,6 @@ const I18N = {
     'nav.personal': 'Herramienta Personal',
     'nav.sharing': 'Opiniones Compartidas',
     'nav.settings': 'Fuentes y Temas',
-    'nav.research': 'Investigación',
     'brief.today_tab': 'Hoy',
     'brief.archive_tab': 'Archivo',
     'brief.title': 'Resumen Diario',
@@ -1915,6 +2078,16 @@ const I18N = {
     'personal.search_ph': 'ej. cumplimiento de GDPR, infracción de patentes, SEC…',
     'personal.search_btn': 'Buscar',
     'personal.searching': 'Buscando…',
+    'personal.research_title': 'Investigar una Noticia',
+    'personal.research_desc': 'Pega el enlace de una noticia o sube una imagen, luego elige qué tipo de investigación quieres.',
+    'personal.research_url_ph': 'https://ejemplo.com/articulo…',
+    'personal.research_or': 'o',
+    'personal.research_summary_btn': '📝 Resumen',
+    'personal.research_impact_btn': '📊 Impacto en mis empresas/industrias',
+    'personal.research_impact_hint': 'Agrega primero una empresa o sector en Fuentes y Temas.',
+    'personal.research_reset': '✕ Reiniciar',
+    'personal.research_running': 'Investigando…',
+    'personal.research_this': '🔬 Investigar esto',
     'personal.compare_tab': 'Comparar',
     'personal.compare_title': 'Análisis Legal Competitivo',
     'personal.refresh': 'Actualizar',
@@ -2004,7 +2177,6 @@ const I18N = {
     'nav.personal': 'Outil Personnel',
     'nav.sharing': 'Avis Partagés',
     'nav.settings': 'Sources et Sujets',
-    'nav.research': 'Recherche',
     'brief.today_tab': "Aujourd'hui",
     'brief.archive_tab': 'Archives',
     'brief.title': 'Résumé Quotidien',
@@ -2036,6 +2208,16 @@ const I18N = {
     'personal.search_ph': 'ex. application du RGPD, contrefaçon de brevet, SEC…',
     'personal.search_btn': 'Rechercher',
     'personal.searching': 'Recherche en cours…',
+    'personal.research_title': 'Rechercher un Article',
+    'personal.research_desc': "Collez le lien d'un article ou téléchargez une image, puis choisissez le type de recherche souhaité.",
+    'personal.research_url_ph': 'https://exemple.com/article…',
+    'personal.research_or': 'ou',
+    'personal.research_summary_btn': '📝 Résumé',
+    'personal.research_impact_btn': '📊 Impact sur mes entreprises/secteurs',
+    'personal.research_impact_hint': "Ajoutez d'abord une entreprise ou un secteur suivi dans Sources et Sujets.",
+    'personal.research_reset': '✕ Réinitialiser',
+    'personal.research_running': 'Recherche en cours…',
+    'personal.research_this': '🔬 Rechercher ceci',
     'personal.compare_tab': 'Comparer',
     'personal.compare_title': 'Analyse Juridique Concurrentielle',
     'personal.refresh': 'Actualiser',
@@ -2125,7 +2307,6 @@ const I18N = {
     'nav.personal': '个人工具',
     'nav.sharing': '分享观点',
     'nav.settings': '来源与主题',
-    'nav.research': '研究',
     'brief.today_tab': '今日',
     'brief.archive_tab': '归档',
     'brief.title': '每日简报',
@@ -2157,6 +2338,16 @@ const I18N = {
     'personal.search_ph': '例如：GDPR执法、专利侵权、SEC…',
     'personal.search_btn': '搜索',
     'personal.searching': '搜索中…',
+    'personal.research_title': '直接调查报道',
+    'personal.research_desc': '粘贴报道链接或上传图片，然后选择您想要的调查类型。',
+    'personal.research_url_ph': 'https://example.com/article…',
+    'personal.research_or': '或',
+    'personal.research_summary_btn': '📝 摘要',
+    'personal.research_impact_btn': '📊 对我关注的企业/行业的影响',
+    'personal.research_impact_hint': '请先在来源与主题中添加追踪企业或行业。',
+    'personal.research_reset': '✕ 重置',
+    'personal.research_running': '调查中…',
+    'personal.research_this': '🔬 调查此报道',
     'personal.compare_tab': '比较',
     'personal.compare_title': '竞争法律分析',
     'personal.refresh': '刷新',
@@ -2246,7 +2437,6 @@ const I18N = {
     'nav.personal': 'パーソナルツール',
     'nav.sharing': '意見共有',
     'nav.settings': 'ソース & トピック',
-    'nav.research': 'リサーチ',
     'brief.today_tab': '今日',
     'brief.archive_tab': 'アーカイブ',
     'brief.title': 'デイリーブリーフィング',
@@ -2278,6 +2468,16 @@ const I18N = {
     'personal.search_ph': '例：GDPR執行、特許侵害、SEC…',
     'personal.search_btn': '検索',
     'personal.searching': '検索中…',
+    'personal.research_title': 'ストーリーを直接調査',
+    'personal.research_desc': 'ストーリーのリンクを貼るか画像をアップロードして、調査の種類を選んでください。',
+    'personal.research_url_ph': 'https://example.com/article…',
+    'personal.research_or': 'または',
+    'personal.research_summary_btn': '📝 要約',
+    'personal.research_impact_btn': '📊 自分の企業・業界への影響調査',
+    'personal.research_impact_hint': 'まずソース＆トピックで追跡企業または業種を追加してください。',
+    'personal.research_reset': '✕ リセット',
+    'personal.research_running': '調査中…',
+    'personal.research_this': '🔬 このストーリーを調査',
     'personal.compare_tab': '比較',
     'personal.compare_title': '競合法務分析',
     'personal.refresh': '更新',

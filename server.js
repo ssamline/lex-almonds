@@ -2,8 +2,28 @@ const express = require('express');
 const path = require('path');
 
 const app = express();
+app.set('trust proxy', true); // Render sits behind a proxy — needed for req.ip to reflect the real client
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname)));
+
+// ── Simple in-memory rate limiter (per IP) — no new dependency needed at this traffic scale ──
+const RATE_LIMIT = { windowMs: 60 * 60 * 1000, max: 8 }; // 8 requests / hour / IP
+const rateHits = new Map(); // ip -> { count, resetAt }
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const entry = rateHits.get(ip);
+  if (!entry || now > entry.resetAt) {
+    rateHits.set(ip, { count: 1, resetAt: now + RATE_LIMIT.windowMs });
+    return true;
+  }
+  if (entry.count >= RATE_LIMIT.max) return false;
+  entry.count++;
+  return true;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of rateHits) if (now > entry.resetAt) rateHits.delete(ip);
+}, 10 * 60 * 1000);
 
 // Common RSS/Atom feed paths to try for any domain
 const RSS_PATHS = [
@@ -149,39 +169,46 @@ app.post('/api/search-news', async (req, res) => {
   }
 });
 
+// Fetch a URL and extract {title, desc, paragraphs, finalUrl} — shared by the
+// article reader modal and story-research.
+async function extractArticleText(url) {
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+    signal: AbortSignal.timeout(12000),
+    redirect: 'follow'
+  });
+
+  const html     = await response.text();
+  const finalUrl = response.url;
+
+  const strip = s => s
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&nbsp;/g,' ')
+    .replace(/\s{2,}/g,' ').trim();
+
+  const title = strip(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '');
+  const desc  = html.match(/<meta[^>]+(?:name=["']description["']|property=["']og:description["'])[^>]+content=["']([\s\S]*?)["']/i)?.[1]?.trim() || '';
+  const paragraphs = [...html.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)]
+    .map(m => strip(m[1]))
+    .filter(p => p.length > 80 && p.length < 2000);
+
+  return { title, desc, paragraphs: paragraphs.slice(0, 30), finalUrl };
+}
+
 // Fetch and extract full article content for the reader modal
 app.post('/api/fetch-article', async (req, res) => {
   const { url } = req.body;
   if (!url || !url.startsWith('http')) return res.status(400).json({ error: 'Invalid URL' });
 
   try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-      signal: AbortSignal.timeout(12000),
-      redirect: 'follow'
-    });
-
-    const html     = await response.text();
-    const finalUrl = response.url;
-
-    const strip = s => s
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&nbsp;/g,' ')
-      .replace(/\s{2,}/g,' ').trim();
-
-    const title = strip(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '');
-    const desc  = html.match(/<meta[^>]+(?:name=["']description["']|property=["']og:description["'])[^>]+content=["']([\s\S]*?)["']/i)?.[1]?.trim() || '';
-    const paragraphs = [...html.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)]
-      .map(m => strip(m[1]))
-      .filter(p => p.length > 80 && p.length < 2000);
-
-    res.json({ title, desc, paragraphs: paragraphs.slice(0, 30), finalUrl });
+    const data = await extractArticleText(url);
+    res.json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -411,6 +438,97 @@ Respond ONLY as valid JSON (no markdown fences, no text outside the JSON object)
       res.json({ analysis: { summary: raw }, sources: {} });
     }
   } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Story research: summarize a story, or analyze its impact on tracked companies/sectors,
+// from either a pasted URL or an uploaded image. See CLAUDE.md for the design rules this
+// endpoint must keep (fixed server-side prompts, cost caps, rate limit, JSON-only output).
+const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+
+app.post('/api/story-research', async (req, res) => {
+  if (!checkRateLimit(req.ip)) {
+    return res.status(429).json({ error: 'Too many research requests. Please try again later.' });
+  }
+
+  const { researchType, url, image, companies = [], sectors = [] } = req.body;
+  if (!['summary', 'impact'].includes(researchType)) {
+    return res.status(400).json({ error: 'Invalid research type.' });
+  }
+  if (!url && !image) return res.status(400).json({ error: 'Provide a URL or an image.' });
+  if (url && image) return res.status(400).json({ error: 'Provide either a URL or an image, not both.' });
+  if (researchType === 'impact' && companies.length === 0 && sectors.length === 0) {
+    return res.status(400).json({ error: 'Add a tracked company or business sector first.' });
+  }
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set.' });
+
+  // 1. Prepare the source content as Claude message content blocks
+  let sourceTitle = '';
+  let userContent;
+
+  if (url) {
+    if (!/^https?:\/\//.test(url)) return res.status(400).json({ error: 'Invalid URL.' });
+    try {
+      const { title, desc, paragraphs } = await extractArticleText(url);
+      sourceTitle = title || url;
+      const text = (paragraphs.length ? paragraphs.join('\n\n') : desc).slice(0, 6000);
+      if (!text.trim()) return res.status(422).json({ error: 'Could not extract readable content from that URL.' });
+      userContent = [{ type: 'text', text: `Article title: ${sourceTitle}\n\n${text}` }];
+    } catch (e) {
+      return res.status(502).json({ error: `Could not fetch that URL: ${e.message}` });
+    }
+  } else {
+    const { data, mediaType } = image || {};
+    if (!data || !ALLOWED_IMAGE_TYPES.includes(mediaType)) {
+      return res.status(400).json({ error: 'Unsupported image. Use PNG, JPEG, WebP, or GIF.' });
+    }
+    const approxBytes = data.length * 0.75; // base64 length -> decoded byte estimate
+    if (approxBytes > 5 * 1024 * 1024) return res.status(413).json({ error: 'Image too large (5MB limit).' });
+    sourceTitle = 'Uploaded image';
+    userContent = [
+      { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
+      { type: 'text', text: 'This image shows a news story, legal document, or announcement. Analyze it.' }
+    ];
+  }
+
+  // 2. Fixed system prompt per research type
+  let system, maxTokens;
+  if (researchType === 'summary') {
+    maxTokens = 700;
+    system = `You are a legal analyst. Given a news story about a law, regulation, or legal/regulatory trend, explain what it covers and why it matters.
+Respond ONLY as valid JSON (no markdown fences, no text outside the JSON object):
+{"headline":"one-line description of the law/trend covered","summary":"3-5 sentence plain-language explanation of what it is and why it matters","keyPoints":["point 1","point 2","point 3"]}`;
+  } else {
+    maxTokens = 1500;
+    const targets = [...companies, ...sectors];
+    system = `You are a legal intelligence analyst. Given a news story about a law, regulation, or legal/regulatory trend, analyze its potential impact specifically on these companies/industries: ${targets.join(', ')}. If a target is not clearly affected, say so plainly rather than inventing a connection.
+Respond ONLY as valid JSON (no markdown fences, no text outside the JSON object):
+{"summary":"2-3 sentence overview of what the story covers","impacts":[{"target":"company or industry name","riskLevel":"High|Medium|Low|None","impact":"1-3 sentence explanation specific to this target"}]}`;
+  }
+
+  // 3. Call Claude
+  try {
+    const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: maxTokens,
+        system,
+        messages: [{ role: 'user', content: userContent }]
+      }),
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!claudeRes.ok) return res.status(500).json({ error: 'Claude API error.' });
+    const claudeData = await claudeRes.json();
+    const raw = (claudeData.content?.[0]?.text || '').trim();
+    const m = raw.match(/\{[\s\S]*\}/);
+    const result = m ? JSON.parse(m[0]) : { summary: raw };
+    res.json({ result, sourceTitle, researchType });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
