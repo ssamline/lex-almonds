@@ -379,7 +379,6 @@ Only include these topics: ${activeTopics.join(',')}.`;
   const body = {
     model: hasCompanies ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001',
     max_tokens: hasCompanies ? 4000 : 2500,
-    temperature: 0,
     system,
     messages: [{ role: 'user', content: `Generate briefing. Topics:${activeTopics.join(',')}.` }]
   };
@@ -388,6 +387,8 @@ Only include these topics: ${activeTopics.join(',')}.`;
       { type: 'web_search_20260209', name: 'web_search', max_uses: 8 },
       { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 8 }
     ];
+  } else {
+    body.temperature = 0; // claude-sonnet-5 rejects an explicit temperature; Haiku path keeps it for consistency
   }
 
   try {
@@ -395,7 +396,7 @@ Only include these topics: ${activeTopics.join(',')}.`;
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(hasCompanies ? 60000 : 30000)
+      signal: AbortSignal.timeout(hasCompanies ? 150000 : 30000)
     });
     const data = await claudeRes.json();
     res.status(claudeRes.status).json(data);
@@ -522,10 +523,14 @@ Respond ONLY as valid JSON (no markdown fences, no text outside the JSON object)
 }`,
         messages: [{ role: 'user', content: ctx }]
       }),
-      signal: AbortSignal.timeout(60000)
+      signal: AbortSignal.timeout(150000)
     });
 
-    if (!claudeRes.ok) return res.status(500).json({ error: 'Claude API error.' });
+    if (!claudeRes.ok) {
+      const errBody = await claudeRes.text().catch(() => '');
+      console.error('compare-companies Claude API error:', claudeRes.status, errBody);
+      return res.status(500).json({ error: 'Claude API error.' });
+    }
     const claudeData = await claudeRes.json();
     // With web_search/web_fetch tools, content includes tool_result blocks alongside
     // text blocks — the final answer isn't necessarily at index 0, so join all text blocks.
