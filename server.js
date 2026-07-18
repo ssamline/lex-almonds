@@ -430,52 +430,64 @@ Reply ONLY in valid JSON, no markdown fences:
 {"sections":[{"topic":"ip","bullets":[{"text":"one-sentence summary of the article","ref":1}],"prose":"...","biz":[{"type":"opportunity","company":"","sector":"","text":"..."}]}],"foreignSummaries":[{"language":"French","text":"..."}],"sourceAlternatives":[{"failedDomain":"...","suggestion":"...","reason":"..."}]}
 Only include these topics: ${activeTopics.join(',')}.`;
 
-  try {
-    const sectionsPromise = fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 2500,
-        temperature: 0,
-        system: sectionsSystem,
-        messages: [{ role: 'user', content: `Generate briefing. Topics:${activeTopics.join(',')}.` }]
-      }),
-      signal: AbortSignal.timeout(30000)
-    });
-
-    const companyIntelPromise = hasCompanies
-      ? Promise.all(researchCompanies.map(co => researchCompanyIntel(apiKey, co, topicNames, sectors)))
-      : Promise.resolve([]);
-
-    const [sectionsRes, companyIntelResults] = await Promise.all([sectionsPromise, companyIntelPromise]);
-
-    if (!sectionsRes.ok) {
-      const errBody = await sectionsRes.json().catch(() => ({}));
-      return res.status(500).json({ error: errBody.error || { message: 'Briefing generation failed.' } });
+  // Isolated in its own try/catch (rather than let its fetch reject straight into the
+  // outer Promise.all) so a sections-track failure produces a clearly labeled error
+  // instead of an ambiguous "operation aborted" that could equally point at either
+  // track — this distinction was impossible to diagnose without it in earlier testing.
+  async function runSections() {
+    try {
+      const sectionsRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 2500,
+          temperature: 0,
+          system: sectionsSystem,
+          messages: [{ role: 'user', content: `Generate briefing. Topics:${activeTopics.join(',')}.` }]
+        }),
+        signal: AbortSignal.timeout(45000)
+      });
+      if (!sectionsRes.ok) {
+        const errBody = await sectionsRes.json().catch(() => ({}));
+        console.error('generate-briefing sections HTTP error:', sectionsRes.status, JSON.stringify(errBody));
+        return { ok: false, error: errBody.error || { message: `Sections generation failed (HTTP ${sectionsRes.status}).` } };
+      }
+      const sectionsData = await sectionsRes.json();
+      const sectionsText = (sectionsData.content || []).map(b => b.text || '').join('').trim();
+      const sm = sectionsText.match(/\{[\s\S]*\}/);
+      if (!sm) return { ok: false, error: { message: 'Sections generation returned no usable content.' } };
+      try {
+        return { ok: true, data: JSON.parse(sm[0]) };
+      } catch {
+        return { ok: false, error: { message: 'Sections generation returned malformed JSON.' } };
+      }
+    } catch (e) {
+      console.error('generate-briefing sections track failed:', e.message);
+      return { ok: false, error: { message: `Sections generation timed out or failed: ${e.message}` } };
     }
-    const sectionsData = await sectionsRes.json();
-    const sectionsText = (sectionsData.content || []).map(b => b.text || '').join('').trim();
-    const sm = sectionsText.match(/\{[\s\S]*\}/);
-    if (!sm) return res.status(500).json({ error: { message: 'Briefing generation returned no usable content.' } });
-
-    let parsedSections;
-    try { parsedSections = JSON.parse(sm[0]); }
-    catch { return res.status(500).json({ error: { message: 'Briefing generation returned malformed JSON.' } }); }
-
-    const merged = {
-      sections: parsedSections.sections || [],
-      foreignSummaries: parsedSections.foreignSummaries || [],
-      sourceAlternatives: parsedSections.sourceAlternatives || [],
-      companyIntel: companyIntelResults.filter(Boolean)
-    };
-    // Wrapped in the same {content:[{type:'text',text:...}]} envelope the raw Claude
-    // API would return, so the existing client-side parsing (apiData.content.map(...))
-    // keeps working unchanged even though this is now server-merged, not proxied.
-    res.json({ content: [{ type: 'text', text: JSON.stringify(merged) }] });
-  } catch (e) {
-    res.status(500).json({ error: { message: e.message } });
   }
+
+  const companyIntelPromise = hasCompanies
+    ? Promise.all(researchCompanies.map(co => researchCompanyIntel(apiKey, co, topicNames, sectors)))
+    : Promise.resolve([]);
+
+  const [sectionsResult, companyIntelResults] = await Promise.all([runSections(), companyIntelPromise]);
+
+  if (!sectionsResult.ok) {
+    return res.status(500).json({ error: sectionsResult.error });
+  }
+
+  const merged = {
+    sections: sectionsResult.data.sections || [],
+    foreignSummaries: sectionsResult.data.foreignSummaries || [],
+    sourceAlternatives: sectionsResult.data.sourceAlternatives || [],
+    companyIntel: companyIntelResults.filter(Boolean)
+  };
+  // Wrapped in the same {content:[{type:'text',text:...}]} envelope the raw Claude
+  // API would return, so the existing client-side parsing (apiData.content.map(...))
+  // keeps working unchanged even though this is now server-merged, not proxied.
+  res.json({ content: [{ type: 'text', text: JSON.stringify(merged) }] });
 });
 
 // Researches ONE company's competitive legal position (risks, advantages, developments,
