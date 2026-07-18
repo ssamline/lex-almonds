@@ -362,18 +362,19 @@ Respond ONLY as valid JSON (no markdown fences): {"opportunities":[{"text":"1-2 
       signal: AbortSignal.timeout(180000)
     });
     if (!claudeRes.ok) {
-      console.error(`researchCompanyIntel HTTP ${claudeRes.status} for ${company}:`, await claudeRes.text().catch(() => ''));
-      return null;
+      const errBody = await claudeRes.text().catch(() => '');
+      console.error(`researchCompanyIntel HTTP ${claudeRes.status} for ${company}:`, errBody);
+      return { company, error: `HTTP ${claudeRes.status}: ${errBody.slice(0, 300)}` };
     }
     const data = await claudeRes.json();
     const text = (data.content || []).map(b => b.text || '').join('').trim();
     const m = text.match(/\{[\s\S]*\}/);
-    if (!m) return null;
+    if (!m) return { company, error: `No JSON found in response (stop_reason: ${data.stop_reason}, text length: ${text.length})` };
     const parsed = JSON.parse(m[0]);
     return { company, opportunities: parsed.opportunities || [], risks: parsed.risks || [] };
   } catch (e) {
     console.error(`researchCompanyIntel failed for ${company}:`, e.message);
-    return null;
+    return { company, error: e.message };
   }
 }
 
@@ -478,11 +479,21 @@ Only include these topics: ${activeTopics.join(',')}.`;
     return res.status(500).json({ error: sectionsResult.error });
   }
 
+  // companyIntelResults entries are either {company,opportunities,risks} on success
+  // or {company,error} on failure (researchCompanyIntel never returns null). Surfacing
+  // the errors (temporarily, as companyIntelErrors) instead of silently dropping them
+  // was added specifically to diagnose why per-company research kept failing without
+  // access to server logs — worth keeping short-term even though the UI ignores it.
+  const companyIntelOk = companyIntelResults.filter(r => r && !r.error);
+  const companyIntelErrors = companyIntelResults.filter(r => r && r.error);
+  if (companyIntelErrors.length) console.error('generate-briefing companyIntel errors:', JSON.stringify(companyIntelErrors));
+
   const merged = {
     sections: sectionsResult.data.sections || [],
     foreignSummaries: sectionsResult.data.foreignSummaries || [],
     sourceAlternatives: sectionsResult.data.sourceAlternatives || [],
-    companyIntel: companyIntelResults.filter(Boolean)
+    companyIntel: companyIntelOk,
+    companyIntelErrors
   };
   // Wrapped in the same {content:[{type:'text',text:...}]} envelope the raw Claude
   // API would return, so the existing client-side parsing (apiData.content.map(...))
