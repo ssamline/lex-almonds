@@ -326,10 +326,68 @@ app.post('/api/chat', async (req, res) => {
 
 const BRIEFING_TOPIC_LABELS = { ip: 'IP & Technology', reg: 'Regulatory & Compliance', lit: 'Litigation & Courts', corp: 'Corporate & M&A' };
 
+// Bounds the worst-case cost/latency of the per-company parallel fan-out below —
+// a user tracking many companies shouldn't be able to trigger an unbounded number
+// of concurrent Sonnet 5 + web_search/web_fetch calls in one request.
+const MAX_COMPANIES_FOR_RESEARCH = 5;
+
+// Researches ONE company's jurisdiction-aware legal opportunities/risks via Sonnet 5
+// + web_search/web_fetch. Scoped to a single company so it completes fast enough to
+// run in parallel with sibling calls — a live test that researched 2 companies in one
+// combined call took 280s+ and still didn't finish. Returns null on any failure so one
+// company's research failing doesn't take down the whole briefing/comparison.
+async function researchCompanyIntel(apiKey, company, topicNames, sectors) {
+  const system = `You are a legal intelligence analyst. Research ${company} to find realistic, well-sourced legal/regulatory opportunities and risks relevant to these topics: ${topicNames}.${sectors.length ? ` Business sectors: ${sectors.join(', ')}.` : ''}
+First determine (use web_search if needed) which countries ${company} primarily operates in or is listed in — do not assume it is US-only. For each relevant jurisdiction, prioritize official, primary sources over blogs or unverified news: SEC EDGAR and CourtListener for US companies, EUR-Lex and European Commission announcements for the EU, Companies House and the FCA register for the UK, EDINET for Japan, DART for South Korea, or the equivalent official regulator/court/gazette for other countries.
+Also look at what ${company} has recently told investors — 10-K risk factors, annual report, earnings call commentary, investor day materials — and explicitly compare that against current legal/regulatory developments.
+Every item must be grounded in a specific source; if you cannot find credible evidence, omit it rather than inventing one.
+Respond ONLY as valid JSON (no markdown fences): {"opportunities":[{"text":"1-2 sentences","source":"https://..."}],"risks":[{"text":"1-2 sentences","source":"https://..."}]}`;
+
+  try {
+    const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-5',
+        max_tokens: 10000,
+        thinking: { type: 'adaptive' },
+        output_config: { effort: 'medium' },
+        tools: [
+          { type: 'web_search_20260209', name: 'web_search', max_uses: 4 },
+          { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 4 }
+        ],
+        system,
+        messages: [{ role: 'user', content: `Research ${company}.` }]
+      }),
+      signal: AbortSignal.timeout(180000)
+    });
+    if (!claudeRes.ok) {
+      console.error(`researchCompanyIntel HTTP ${claudeRes.status} for ${company}:`, await claudeRes.text().catch(() => ''));
+      return null;
+    }
+    const data = await claudeRes.json();
+    const text = (data.content || []).map(b => b.text || '').join('').trim();
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    const parsed = JSON.parse(m[0]);
+    return { company, opportunities: parsed.opportunities || [], risks: parsed.risks || [] };
+  } catch (e) {
+    console.error(`researchCompanyIntel failed for ${company}:`, e.message);
+    return null;
+  }
+}
+
 // Server-fixed prompt for the Daily Briefing — moved off the open /api/chat
 // proxy specifically because it now optionally uses paid web_search/web_fetch
 // tools, and a client-controlled proxy would let anyone trigger those at will.
 // See CLAUDE.md and docs/plans/plan_global_legal_research.md for the design.
+//
+// The topic-sections generation (Haiku, no tools) and the per-company jurisdiction
+// research (Sonnet 5 + tools, one call per company, run in parallel) are two
+// separate Claude calls merged into one response below. Splitting them out this way
+// keeps the fast/cheap Haiku path exactly as it always was, and bounds the slow path's
+// wall-clock time to roughly ONE company's research time instead of N companies done
+// serially in a single tool-loop (which is what caused the earlier timeouts).
 app.post('/api/generate-briefing', async (req, res) => {
   if (!checkRateLimit(req.ip, 'generate-briefing', 30)) {
     return res.status(429).json({ error: 'Too many briefing requests. Please try again later.' });
@@ -348,15 +406,11 @@ app.post('/api/generate-briefing', async (req, res) => {
   const kwExtra     = keywords.length ? ` Emphasize: ${keywords.join(', ')}.` : '';
   const today       = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
   const hasCompanies = companies.length > 0;
+  const researchCompanies = companies.slice(0, MAX_COMPANIES_FOR_RESEARCH);
 
   let bizInstr = ` For each section include a "biz" array of 1-2 opportunities and 1-2 risks directly tied to that section's legal developments.`;
-  if (sectors.length)   bizInstr += ` Business sectors: ${sectors.join(', ')}.`;
-  if (companies.length) bizInstr += ` Tracked companies: ${companies.join(', ')}.`;
-  if (hasCompanies) {
-    bizInstr += ` For opportunity/risk items tied to a tracked company: first determine (use web_search if needed) which countries that company primarily operates in or is listed in — do not assume it is US-only. For each relevant jurisdiction, prioritize official, primary sources over blogs or unverified news — for example SEC EDGAR and CourtListener for US companies, EUR-Lex and European Commission announcements for the EU, Companies House and the FCA register for the UK, EDINET for Japan, DART for South Korea, or the equivalent official regulator, court, or government gazette for other countries. Also look for what the company has recently told investors — 10-K risk factors, annual report, earnings call commentary, investor day materials — and explicitly compare that against current legal/regulatory developments, calling out concrete gaps or alignments rather than generic statements. Every company-related biz item must be grounded in a specific finding; if you cannot find a credible source, say so rather than inventing one. Add a "source" field (a real URL, or "" if no external source was used) to each biz item.`;
-  } else {
-    bizInstr += ` Each biz item: {type:"opportunity"|"risk",company:"name or empty",sector:"name or empty",text:"1-2 sentences"}.`;
-  }
+  if (sectors.length) bizInstr += ` Business sectors: ${sectors.join(', ')}.`;
+  bizInstr += ` Each biz item: {type:"opportunity"|"risk",company:"",sector:"name or empty",text:"1-2 sentences"}. Do not name specific tracked companies in this array — verified, sourced company-specific intelligence is generated separately.`;
 
   let articleCtx = '';
   if (articles.length) {
@@ -370,54 +424,113 @@ app.post('/api/generate-briefing', async (req, res) => {
     ? ` Additionally, for each of these source domains that returned no articles today — ${failedSources.join(', ')} — suggest ONE real, well-known alternative English-language legal or business-regulatory news site (one likely to have a working public RSS feed) that covers similar ground. Add one entry per failed domain to a "sourceAlternatives" array: {"failedDomain":"...","suggestion":"suggested-domain.com","reason":"one short sentence why"}.`
     : '';
 
-  const system = `You are a senior legal news analyst. Generate a concise daily legal briefing for ${today}. Topics: ${topicNames}.${kwExtra}${bizInstr}
+  const sectionsSystem = `You are a senior legal news analyst. Generate a concise daily legal briefing for ${today}. Topics: ${topicNames}.${kwExtra}${bizInstr}
 ${hasArticles ? articleCtx + `\n\nUsing ONLY the articles listed above, select and summarize the ones most strategically significant for the selected topics${sectors.length ? ' and business sectors' : ''} — prioritize by likely business/legal impact (deal risk, regulatory exposure, competitive positioning, revenue impact), never by which source domain or language an article happens to come from. Write 2-3 bullet summaries per section from that selection. Each bullet MUST reference one article by its number using "ref": <integer>. Do NOT copy URLs into the JSON.${foreignInstr}` : 'No live articles available — generate a plausible briefing based on current legal trends. Omit "ref" from bullets.'}${failedSourcesInstr}
 Reply ONLY in valid JSON, no markdown fences:
 {"sections":[{"topic":"ip","bullets":[{"text":"one-sentence summary of the article","ref":1}],"prose":"...","biz":[{"type":"opportunity","company":"","sector":"","text":"..."}]}],"foreignSummaries":[{"language":"French","text":"..."}],"sourceAlternatives":[{"failedDomain":"...","suggestion":"...","reason":"..."}]}
 Only include these topics: ${activeTopics.join(',')}.`;
 
-  const body = {
-    model: hasCompanies ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001',
-    max_tokens: hasCompanies ? 16000 : 2500,
-    system,
-    messages: [{ role: 'user', content: `Generate briefing. Topics:${activeTopics.join(',')}.` }]
-  };
-  if (hasCompanies) {
-    // max_tokens is a hard cap on thinking + tool_use + text combined on Sonnet 5's
-    // adaptive thinking — a live test at max_tokens:4000 hit stop_reason:"max_tokens"
-    // after 7.5k tokens of thinking and never produced any text. 16000 plus a lower
-    // "medium" effort (default is "high", which thinks almost always) leaves real
-    // room for the final JSON after tool-use research. See platform.claude.com's
-    // adaptive-thinking docs, "Cost control" section.
-    body.thinking = { type: 'adaptive' };
-    body.output_config = { effort: 'medium' };
-    // max_uses kept modest: 2+ companies each doing jurisdiction research serially
-    // through the tool loop adds up in latency fast — a live test with 2 companies
-    // and max_uses:8 exceeded 150s. 4 each keeps the request under the timeout below
-    // while still allowing real per-company research (see plan doc's cost/latency note).
-    body.tools = [
-      { type: 'web_search_20260209', name: 'web_search', max_uses: 4 },
-      { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 4 }
-    ];
-  } else {
-    body.temperature = 0; // claude-sonnet-5 rejects an explicit temperature; Haiku path keeps it for consistency
-  }
-
   try {
-    const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+    const sectionsPromise = fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(hasCompanies ? 280000 : 30000)
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 2500,
+        temperature: 0,
+        system: sectionsSystem,
+        messages: [{ role: 'user', content: `Generate briefing. Topics:${activeTopics.join(',')}.` }]
+      }),
+      signal: AbortSignal.timeout(30000)
     });
-    const data = await claudeRes.json();
-    res.status(claudeRes.status).json(data);
+
+    const companyIntelPromise = hasCompanies
+      ? Promise.all(researchCompanies.map(co => researchCompanyIntel(apiKey, co, topicNames, sectors)))
+      : Promise.resolve([]);
+
+    const [sectionsRes, companyIntelResults] = await Promise.all([sectionsPromise, companyIntelPromise]);
+
+    if (!sectionsRes.ok) {
+      const errBody = await sectionsRes.json().catch(() => ({}));
+      return res.status(500).json({ error: errBody.error || { message: 'Briefing generation failed.' } });
+    }
+    const sectionsData = await sectionsRes.json();
+    const sectionsText = (sectionsData.content || []).map(b => b.text || '').join('').trim();
+    const sm = sectionsText.match(/\{[\s\S]*\}/);
+    if (!sm) return res.status(500).json({ error: { message: 'Briefing generation returned no usable content.' } });
+
+    let parsedSections;
+    try { parsedSections = JSON.parse(sm[0]); }
+    catch { return res.status(500).json({ error: { message: 'Briefing generation returned malformed JSON.' } }); }
+
+    const merged = {
+      sections: parsedSections.sections || [],
+      foreignSummaries: parsedSections.foreignSummaries || [],
+      sourceAlternatives: parsedSections.sourceAlternatives || [],
+      companyIntel: companyIntelResults.filter(Boolean)
+    };
+    // Wrapped in the same {content:[{type:'text',text:...}]} envelope the raw Claude
+    // API would return, so the existing client-side parsing (apiData.content.map(...))
+    // keeps working unchanged even though this is now server-merged, not proxied.
+    res.json({ content: [{ type: 'text', text: JSON.stringify(merged) }] });
   } catch (e) {
     res.status(500).json({ error: { message: e.message } });
   }
 });
 
-// Competitive legal analysis: SEC EDGAR + CourtListener + user sources
+// Researches ONE company's competitive legal position (risks, advantages, developments,
+// citations) via Sonnet 5 + web_search/web_fetch, scoped to just that company so it can
+// run in parallel with sibling companies rather than one combined multi-company call
+// that serializes all the tool-use round trips (which timed out at 280s+ in testing).
+async function researchCompareCompanyIntel(apiKey, company, ctx, activeTopicLabels) {
+  const system = `You are a legal intelligence analyst specializing in competitive regulatory analysis for ${company}. Focus strictly on these legal topic areas: ${activeTopicLabels.length ? activeTopicLabels.join(', ') : 'general legal and regulatory matters'}.
+
+This company may not operate primarily in the US. Before analyzing, determine (use web_search if needed) which countries ${company} primarily operates in and where it is listed/incorporated — do not assume US-only. For each relevant jurisdiction, prioritize official, primary sources: SEC EDGAR and CourtListener for US companies, EUR-Lex and European Commission announcements for the EU, Companies House and the FCA register for the UK, EDINET for Japan, DART for South Korea, or the equivalent official regulator/court/gazette for other countries. The context below includes some US-sourced data as a starting point — supplement it via web_search/web_fetch, and don't treat US sources as sufficient for a non-US company.
+
+Also look at what ${company} has recently told investors — 10-K risk factors, annual report, earnings call commentary, investor day materials — and compare that against current legal/regulatory developments.
+
+Every risk, advantage, and development must be grounded in a specific source; omit rather than invent.
+
+Respond ONLY as valid JSON (no markdown fences): {"riskLevel":"High|Medium|Low","keyRisks":["specific risk 1","risk 2","risk 3"],"legalAdvantages":["advantage 1","advantage 2"],"recentDevelopments":["development 1","development 2"],"regulatoryExposure":"one sentence on main exposure","citations":["https://... real URL backing the above","https://..."]}`;
+
+  try {
+    const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-5',
+        max_tokens: 10000,
+        thinking: { type: 'adaptive' },
+        output_config: { effort: 'medium' },
+        tools: [
+          { type: 'web_search_20260209', name: 'web_search', max_uses: 4 },
+          { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 4 }
+        ],
+        system,
+        messages: [{ role: 'user', content: ctx }]
+      }),
+      signal: AbortSignal.timeout(180000)
+    });
+    if (!claudeRes.ok) {
+      console.error(`researchCompareCompanyIntel HTTP ${claudeRes.status} for ${company}:`, await claudeRes.text().catch(() => ''));
+      return null;
+    }
+    const data = await claudeRes.json();
+    const text = (data.content || []).map(b => b.text || '').join('').trim();
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    return { company, data: JSON.parse(m[0]) };
+  } catch (e) {
+    console.error(`researchCompareCompanyIntel failed for ${company}:`, e.message);
+    return null;
+  }
+}
+
+// Competitive legal analysis: SEC EDGAR + CourtListener + user sources, plus per-company
+// jurisdiction research (parallel Sonnet 5 + web_search/web_fetch calls, one per company)
+// followed by a fast Haiku synthesis call that compares the already-gathered per-company
+// findings against each other. Splitting it this way bounds wall-clock time to roughly
+// one company's research instead of N companies researched serially in one long call.
 app.post('/api/compare-companies', async (req, res) => {
   if (!checkRateLimit(req.ip, 'compare-companies', 10)) {
     return res.status(429).json({ error: 'Too many comparison requests. Please try again later.' });
@@ -471,7 +584,7 @@ app.post('/api/compare-companies', async (req, res) => {
     if (!secData[co]) secData[co] = [];
   }
 
-  // 4. Build context for Claude
+  // 4. Build per-topic/sector labels and each company's supplementary context
   const TOPIC_LABELS = { ip: 'IP & Technology law', reg: 'Regulatory & Compliance', lit: 'Litigation & Courts', corp: 'Corporate & M&A' };
   const SECTOR_LABELS = {
     technology:'Technology & AI', finance:'Finance & Banking', healthcare:'Healthcare & Pharma',
@@ -480,91 +593,59 @@ app.post('/api/compare-companies', async (req, res) => {
   };
   const activeTopics  = Object.entries(topics).filter(([,v])=>v).map(([k])=>TOPIC_LABELS[k]||k);
   const activeSectors = Object.entries(sectors).filter(([,v])=>v).map(([k])=>SECTOR_LABELS[k]||k);
+  const researchCompanies = companies.slice(0, MAX_COMPANIES_FOR_RESEARCH);
 
-  let ctx = `Compare these companies from a legal perspective: ${companies.join(' vs. ')}\n\n`;
-  if (activeTopics.length)  ctx += `FOCUS ONLY on these legal topic areas: ${activeTopics.join(', ')}. Do not analyse areas outside this scope.\n`;
-  if (activeSectors.length) ctx += `Industry context: ${activeSectors.join(', ')}.\n`;
-  ctx += `Lens: how do recent changes in law and regulations within the above topic areas create competitive differences?\n\n`;
-
-  for (const co of companies) {
-    ctx += `## ${co}\n`;
-    if (newsData[co].length) ctx += `Recent legal news:\n${newsData[co].map(a => `- ${a.title}`).join('\n')}\n`;
-    if (caseData[co].length) ctx += `Court cases:\n${caseData[co].map(c => `- ${c.title} (${c.court}, ${c.date}): ${c.snippet}`).join('\n')}\n`;
-    if (secData[co].length) ctx += `SEC filings:\n${secData[co].map(s => `- ${s.form} (${s.date}): ${s.company}`).join('\n')}\n`;
-    ctx += '\n';
-  }
+  const ctxFor = (co) => {
+    let ctx = `Analyze ${co} from a legal perspective, as one company being compared against: ${companies.filter(c=>c!==co).join(', ')}.\n\n`;
+    if (activeTopics.length)  ctx += `FOCUS ONLY on these legal topic areas: ${activeTopics.join(', ')}. Do not analyse areas outside this scope.\n`;
+    if (activeSectors.length) ctx += `Industry context: ${activeSectors.join(', ')}.\n`;
+    if (newsData[co]?.length) ctx += `Recent legal news:\n${newsData[co].map(a => `- ${a.title}`).join('\n')}\n`;
+    if (caseData[co]?.length) ctx += `Court cases:\n${caseData[co].map(c => `- ${c.title} (${c.court}, ${c.date}): ${c.snippet}`).join('\n')}\n`;
+    if (secData[co]?.length)  ctx += `SEC filings:\n${secData[co].map(s => `- ${s.form} (${s.date}): ${s.company}`).join('\n')}\n`;
+    return ctx;
+  };
 
   try {
-    const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+    const perCompanyResults = await Promise.all(
+      researchCompanies.map(co => researchCompareCompanyIntel(apiKey, co, ctxFor(co), activeTopics))
+    );
+    const resolved = perCompanyResults.filter(Boolean);
+
+    const companiesObj = {};
+    for (const r of resolved) companiesObj[r.company] = r.data;
+
+    // Fast Haiku synthesis over the already-gathered per-company findings — no tools
+    // needed here, it's reasoning over facts collected above, not researching from
+    // scratch, so this stays cheap and quick regardless of how many companies there are.
+    const synthesisCtx = `Companies analyzed: ${companies.join(' vs. ')}\n\n` +
+      resolved.map(r => `## ${r.company}\nRisk Level: ${r.data.riskLevel || 'Unknown'}\nKey Risks: ${(r.data.keyRisks||[]).join('; ') || 'none found'}\nLegal Advantages: ${(r.data.legalAdvantages||[]).join('; ') || 'none found'}\nRecent Developments: ${(r.data.recentDevelopments||[]).join('; ') || 'none found'}\n`).join('\n');
+
+    const synthesisRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
-        model: 'claude-sonnet-5',
-        // max_tokens is a hard cap on thinking + tool_use + text combined on Sonnet 5's
-        // adaptive thinking — a live test at max_tokens:4000 hit stop_reason:"max_tokens"
-        // after thousands of tokens of thinking and never produced any text. 16000 plus
-        // a lower "medium" effort (default is "high") leaves real room for the final
-        // JSON after tool-use research. See platform.claude.com's adaptive-thinking docs.
-        max_tokens: 16000,
-        thinking: { type: 'adaptive' },
-        output_config: { effort: 'medium' },
-        // max_uses kept modest: comparing 2+ companies each doing jurisdiction research
-        // serially through the tool loop adds up in latency fast — a live test with
-        // max_uses:8 exceeded 150s. See the matching note in /api/generate-briefing.
-        tools: [
-          { type: 'web_search_20260209', name: 'web_search', max_uses: 4 },
-          { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 4 }
-        ],
-        system: `You are a legal intelligence analyst specializing in competitive regulatory analysis. Compare companies strictly within the legal topic areas specified by the user. If specific topic areas are listed (e.g. IP & Technology, Regulatory & Compliance, Litigation & Courts, Corporate & M&A), confine every insight to those areas only — do not stray into unrelated legal domains.
-
-These companies may not all operate primarily in the US. Before analyzing, determine (use web_search if needed) which countries each company primarily operates in and where it is listed/incorporated — do not assume US-only. For each relevant jurisdiction, prioritize official, primary sources over blogs or unverified news: for example SEC EDGAR and CourtListener for US companies, EUR-Lex and European Commission announcements for the EU, Companies House and the FCA register for the UK, EDINET for Japan, DART for South Korea, or the equivalent official regulator, court, or government gazette for other countries. The context below already includes some US-sourced news/case/filing data as a starting point — supplement it with jurisdiction-appropriate sources for each company via web_search/web_fetch, and do not treat the US sources as sufficient for a non-US company.
-
-Also look for what each company has recently told investors — 10-K risk factors, annual report, earnings call commentary, investor day materials — and explicitly compare that against current legal/regulatory developments, calling out concrete gaps or alignments rather than generic statements.
-
-Every risk, advantage, and development you list must be grounded in a specific source found via the context or web_search/web_fetch. Do not write vague, ungrounded generalities — if you cannot find credible evidence for a claim, omit it rather than inventing one.
-
-Respond ONLY as valid JSON (no markdown fences, no text outside the JSON object):
-{
-  "summary": "2-3 sentence overview of the competitive legal landscape within the specified topic areas",
-  "isCompetitors": true,
-  "industryContext": "What industry/market they compete in",
-  "focusAreas": ["topic area 1", "topic area 2"],
-  "companies": {
-    "COMPANY_NAME": {
-      "riskLevel": "High|Medium|Low",
-      "keyRisks": ["specific risk within selected topics 1", "risk 2", "risk 3"],
-      "legalAdvantages": ["advantage within selected topics 1", "advantage 2"],
-      "recentDevelopments": ["recent legal development relevant to selected topics 1", "development 2"],
-      "regulatoryExposure": "One sentence on main exposure within the selected topic areas",
-      "citations": ["https://... real URL backing the above", "https://..."]
-    }
-  },
-  "industryTrends": ["regulatory trend within selected topics 1", "trend 2", "trend 3"],
-  "comparativeVerdict": "Which company has the stronger position within the selected legal topic areas and why",
-  "watchlist": ["upcoming development in selected topic areas to watch 1", "development 2"]
-}`,
-        messages: [{ role: 'user', content: ctx }]
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1500,
+        temperature: 0,
+        system: `You are a legal intelligence analyst. Given per-company legal research below, write a comparative competitive analysis strictly within these topic areas: ${activeTopics.length ? activeTopics.join(', ') : 'general legal and regulatory matters'}. Base your analysis only on the findings given — do not invent new facts.
+Respond ONLY as valid JSON (no markdown fences): {"summary":"2-3 sentence overview","isCompetitors":true,"industryContext":"what industry/market they compete in","focusAreas":["topic area 1","topic area 2"],"industryTrends":["trend 1","trend 2","trend 3"],"comparativeVerdict":"which company has the stronger position and why","watchlist":["development to watch 1","development 2"]}`,
+        messages: [{ role: 'user', content: synthesisCtx || 'No per-company findings were available.' }]
       }),
-      signal: AbortSignal.timeout(280000)
+      signal: AbortSignal.timeout(30000)
     });
 
-    if (!claudeRes.ok) {
-      const errBody = await claudeRes.text().catch(() => '');
-      console.error('compare-companies Claude API error:', claudeRes.status, errBody);
-      return res.status(500).json({ error: 'Claude API error.' });
+    if (!synthesisRes.ok) {
+      const errBody = await synthesisRes.text().catch(() => '');
+      console.error('compare-companies synthesis error:', synthesisRes.status, errBody);
+      return res.status(500).json({ error: 'Comparison synthesis failed.' });
     }
-    const claudeData = await claudeRes.json();
-    // With web_search/web_fetch tools, content includes tool_result blocks alongside
-    // text blocks — the final answer isn't necessarily at index 0, so join all text blocks.
-    const raw = (claudeData.content || []).map(b => b.text || '').join('').trim();
+    const synthesisData = await synthesisRes.json();
+    const synthesisText = (synthesisData.content || []).map(b => b.text || '').join('').trim();
+    const sm = synthesisText.match(/\{[\s\S]*\}/);
+    const synthesis = sm ? JSON.parse(sm[0]) : {};
 
-    try {
-      const m = raw.match(/\{[\s\S]*\}/);
-      const analysis = m ? JSON.parse(m[0]) : { summary: raw };
-      res.json({ analysis, sources: { news: newsData, cases: caseData, sec: secData } });
-    } catch {
-      res.json({ analysis: { summary: raw }, sources: {} });
-    }
+    const analysis = { ...synthesis, companies: companiesObj };
+    res.json({ analysis, sources: { news: newsData, cases: caseData, sec: secData } });
   } catch(e) {
     res.status(500).json({ error: e.message });
   }

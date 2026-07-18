@@ -1119,6 +1119,7 @@ async function generateBriefing(retries = 1) {
     });
 
     const foreignSummaries = Array.isArray(parsed.foreignSummaries) ? parsed.foreignSummaries : [];
+    const companyIntel = Array.isArray(parsed.companyIntel) ? parsed.companyIntel : [];
 
     const sourceAlternatives = Array.isArray(parsed.sourceAlternatives) ? parsed.sourceAlternatives : [];
     const warnEl = document.getElementById('source-warning');
@@ -1142,6 +1143,13 @@ async function generateBriefing(retries = 1) {
       if (s.biz?.length) ctx += '\n' + s.biz.map(x=>`${x.type.toUpperCase()}${x.company?' ('+x.company+')':''}: ${x.text}`).join('\n');
       return ctx;
     }).join('\n\n');
+    if (companyIntel.length) {
+      S.context += '\n\n' + companyIntel.map(ci => {
+        const opps  = (ci.opportunities||[]).map(x=>`OPPORTUNITY: ${x.text}`).join('\n');
+        const risks = (ci.risks||[]).map(x=>`RISK: ${x.text}`).join('\n');
+        return `[${ci.company}]\n${[opps,risks].filter(Boolean).join('\n')}`;
+      }).join('\n\n');
+    }
     if (foreignSummaries.length) {
       S.context += '\n\n' + foreignSummaries.map(fs => `[${fs.language} Summary]\n${fs.text}`).join('\n\n');
     }
@@ -1193,6 +1201,26 @@ async function generateBriefing(retries = 1) {
         </div>
       </div>`;
     }).join('');
+
+    if (companyIntel.length) {
+      out.innerHTML += companyIntel.map(ci => {
+        const row = (items, cls, lbl) => (items||[]).map(x => {
+          const safeHref = x.source ? String(x.source).replace(/"/g,'&quot;') : '';
+          return `<div class="biz-item ${cls}">
+            <div class="biz-lbl">${lbl}</div>
+            <p>${x.text}${safeHref ? ` <a href="${safeHref}" target="_blank" rel="noopener" style="color:var(--accent);font-size:11px">source ↗</a>` : ''}</p>
+          </div>`;
+        }).join('');
+        return `<div class="brief-section">
+          <hr class="divider">
+          <span class="topic-tag" data-t="foreign">🏢 ${ci.company}</span>
+          <div class="biz-card" style="margin-top:12px">
+            <div class="biz-title">📊 Opportunities &amp; Risks</div>
+            <div class="biz-items">${row(ci.opportunities,'opp','▲ Opportunity')}${row(ci.risks,'risk','▼ Risk')}</div>
+          </div>
+        </div>`;
+      }).join('');
+    }
 
     if (foreignSummaries.length) {
       out.innerHTML += foreignSummaries.map(fs => `
