@@ -28,7 +28,12 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
 
 /* ── Header ── */
 .header{background:var(--accent);color:#fff;padding:0 1.5rem;display:flex;align-items:center;justify-content:space-between;height:56px;flex-shrink:0}
-.logo-mark{width:28px;height:28px;border:1.5px solid rgba(255,255,255,.6);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;letter-spacing:-.5px}
+.logo-mark{width:28px;height:28px;border:1.5px solid rgba(255,255,255,.6);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;letter-spacing:-.5px;overflow:visible}
+.logo-mark svg{width:32px;height:32px;flex-shrink:0;animation:almond-wiggle 2.6s ease-in-out infinite}
+@keyframes almond-wiggle{
+  0%,100%{transform:rotate(-8deg) scale(1)}
+  50%{transform:rotate(8deg) scale(1.12)}
+}
 .logo-text{font-size:15px;font-weight:400;letter-spacing:.04em;color:rgba(255,255,255,.95)}
 .logo-sub{font-size:10px;color:rgba(255,255,255,.5);letter-spacing:.08em;text-transform:uppercase;font-family:Arial,sans-serif}
 .header-date{font-size:12px;color:rgba(255,255,255,.55);font-family:Arial,sans-serif}
@@ -320,7 +325,7 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
   <div class="start-gate-inner">
     <div class="start-gate-hero">
       <div class="start-gate-logo">
-        <div class="logo-mark" style="background:#fff;color:var(--accent)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true"><path d="M12.8 2.3C10.2 2.1 6.4 6 5.4 10.8C4.3 15.9 6.5 21 11.6 21.9C15.9 20.9 18.7 16.1 18 11.2C17.4 6.9 15.4 2.5 12.8 2.3Z" fill="#8B4A2C"/><path d="M11.8 6C10.3 9.5 10.4 14.8 12.2 20" stroke="#fff" stroke-width="0.9" stroke-linecap="round" opacity="0.6"/></svg></div>
+        <div class="logo-mark" style="background:#fff;color:var(--accent)"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" aria-hidden="true"><path d="M12.8 2.3C10.2 2.1 6.4 6 5.4 10.8C4.3 15.9 6.5 21 11.6 21.9C15.9 20.9 18.7 16.1 18 11.2C17.4 6.9 15.4 2.5 12.8 2.3Z" fill="#8B4A2C"/><path d="M11.8 6C10.3 9.5 10.4 14.8 12.2 20" stroke="#fff" stroke-width="0.9" stroke-linecap="round" opacity="0.6"/></svg></div>
         <div class="start-gate-hero-title">Lex.Almonds</div>
         <select id="gate-lang-select" onchange="setLanguage(this.value)" style="margin-left:auto;font-size:12px;font-family:Arial,sans-serif;padding:4px 6px;border:1px solid var(--rule);border-radius:6px;background:var(--white);color:var(--ink)">
           <option value="en">English</option>
@@ -360,7 +365,7 @@ body{font-family:Georgia,serif;background:var(--surface);color:var(--ink);min-he
 
   <div class="header">
     <div style="display:flex;align-items:center;gap:10px">
-      <div class="logo-mark"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true"><path d="M12.8 2.3C10.2 2.1 6.4 6 5.4 10.8C4.3 15.9 6.5 21 11.6 21.9C15.9 20.9 18.7 16.1 18 11.2C17.4 6.9 15.4 2.5 12.8 2.3Z" fill="#fff"/><path d="M11.8 6C10.3 9.5 10.4 14.8 12.2 20" stroke="#8B4A2C" stroke-width="0.9" stroke-linecap="round" opacity="0.55"/></svg></div>
+      <div class="logo-mark"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" aria-hidden="true"><path d="M12.8 2.3C10.2 2.1 6.4 6 5.4 10.8C4.3 15.9 6.5 21 11.6 21.9C15.9 20.9 18.7 16.1 18 11.2C17.4 6.9 15.4 2.5 12.8 2.3Z" fill="#fff"/><path d="M11.8 6C10.3 9.5 10.4 14.8 12.2 20" stroke="#8B4A2C" stroke-width="0.9" stroke-linecap="round" opacity="0.55"/></svg></div>
       <div>
         <div class="logo-text">Lex.Almonds</div>
         <div class="logo-sub" data-i18n="header.tagline">Legal Intelligence · Team Edition</div>
