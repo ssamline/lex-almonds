@@ -341,7 +341,7 @@ async function researchCompanyIntel(apiKey, company, topicNames, sectors) {
 First determine (use web_search if needed) which countries ${company} primarily operates in or is listed in — do not assume it is US-only. For each relevant jurisdiction, prioritize official, primary sources over blogs or unverified news: SEC EDGAR and CourtListener for US companies, EUR-Lex and European Commission announcements for the EU, Companies House and the FCA register for the UK, EDINET for Japan, DART for South Korea, or the equivalent official regulator/court/gazette for other countries.
 Also look at what ${company} has recently told investors — 10-K risk factors, annual report, earnings call commentary, investor day materials — and explicitly compare that against current legal/regulatory developments.
 Every item must be grounded in a specific source; if you cannot find credible evidence, omit it rather than inventing one.
-Respond ONLY as valid JSON (no markdown fences): {"opportunities":[{"text":"1-2 sentences","source":"https://..."}],"risks":[{"text":"1-2 sentences","source":"https://..."}]}`;
+You MUST respond with ONLY the JSON object below and nothing else — no explanation, no markdown fences, no prose before or after it. If you find no grounded evidence for opportunities or risks, return that field as an empty array rather than writing an explanation: {"opportunities":[{"text":"1-2 sentences","source":"https://..."}],"risks":[{"text":"1-2 sentences","source":"https://..."}]}`;
 
   try {
     const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
@@ -357,9 +357,9 @@ Respond ONLY as valid JSON (no markdown fences): {"opportunities":[{"text":"1-2 
           { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 4 }
         ],
         system,
-        messages: [{ role: 'user', content: `Research ${company}.` }]
+        messages: [{ role: 'user', content: `Research ${company}. Respond with ONLY the JSON object — no prose.` }]
       }),
-      signal: AbortSignal.timeout(180000)
+      signal: AbortSignal.timeout(200000)
     });
     if (!claudeRes.ok) {
       const errBody = await claudeRes.text().catch(() => '');
@@ -369,7 +369,10 @@ Respond ONLY as valid JSON (no markdown fences): {"opportunities":[{"text":"1-2 
     const data = await claudeRes.json();
     const text = (data.content || []).map(b => b.text || '').join('').trim();
     const m = text.match(/\{[\s\S]*\}/);
-    if (!m) return { company, error: `No JSON found in response (stop_reason: ${data.stop_reason}, text length: ${text.length})` };
+    if (!m) {
+      console.error(`researchCompanyIntel no-JSON for ${company} (stop_reason: ${data.stop_reason}):`, text.slice(0, 500));
+      return { company, error: `No JSON found (stop_reason: ${data.stop_reason}): ${text.slice(0, 200)}` };
+    }
     const parsed = JSON.parse(m[0]);
     return { company, opportunities: parsed.opportunities || [], risks: parsed.risks || [] };
   } catch (e) {
@@ -514,7 +517,7 @@ Also look at what ${company} has recently told investors — 10-K risk factors, 
 
 Every risk, advantage, and development must be grounded in a specific source; omit rather than invent.
 
-Respond ONLY as valid JSON (no markdown fences): {"riskLevel":"High|Medium|Low","keyRisks":["specific risk 1","risk 2","risk 3"],"legalAdvantages":["advantage 1","advantage 2"],"recentDevelopments":["development 1","development 2"],"regulatoryExposure":"one sentence on main exposure","citations":["https://... real URL backing the above","https://..."]}`;
+You MUST respond with ONLY the JSON object below and nothing else — no explanation, no markdown fences, no prose before or after it. If you find no grounded evidence for a field, return an empty array/string rather than writing an explanation: {"riskLevel":"High|Medium|Low","keyRisks":["specific risk 1","risk 2","risk 3"],"legalAdvantages":["advantage 1","advantage 2"],"recentDevelopments":["development 1","development 2"],"regulatoryExposure":"one sentence on main exposure","citations":["https://... real URL backing the above","https://..."]}`;
 
   try {
     const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
@@ -530,9 +533,9 @@ Respond ONLY as valid JSON (no markdown fences): {"riskLevel":"High|Medium|Low",
           { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 4 }
         ],
         system,
-        messages: [{ role: 'user', content: ctx }]
+        messages: [{ role: 'user', content: ctx + '\n\nRespond with ONLY the JSON object — no prose.' }]
       }),
-      signal: AbortSignal.timeout(180000)
+      signal: AbortSignal.timeout(200000)
     });
     if (!claudeRes.ok) {
       console.error(`researchCompareCompanyIntel HTTP ${claudeRes.status} for ${company}:`, await claudeRes.text().catch(() => ''));
@@ -541,7 +544,10 @@ Respond ONLY as valid JSON (no markdown fences): {"riskLevel":"High|Medium|Low",
     const data = await claudeRes.json();
     const text = (data.content || []).map(b => b.text || '').join('').trim();
     const m = text.match(/\{[\s\S]*\}/);
-    if (!m) return null;
+    if (!m) {
+      console.error(`researchCompareCompanyIntel no-JSON for ${company} (stop_reason: ${data.stop_reason}):`, text.slice(0, 500));
+      return null;
+    }
     return { company, data: JSON.parse(m[0]) };
   } catch (e) {
     console.error(`researchCompareCompanyIntel failed for ${company}:`, e.message);
