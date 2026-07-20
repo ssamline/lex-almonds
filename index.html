@@ -1360,7 +1360,7 @@ function goToCompare() {
   compareCompanies();
 }
 
-async function compareCompanies() {
+async function compareCompanies(deep = false) {
   if (S.companies.length < 2) {
     document.getElementById('compare-hint').style.display = '';
     document.getElementById('compare-spin').style.display = 'none';
@@ -1369,14 +1369,22 @@ async function compareCompanies() {
     return;
   }
   document.getElementById('compare-hint').style.display = 'none';
-  document.getElementById('compare-spin').style.display = '';
+  const spinEl = document.getElementById('compare-spin');
+  spinEl.style.display = '';
+  // Fast path (default) reasons only over already-fetched SEC/court/news data — no
+  // live web search, done in seconds. Deep path runs live Sonnet 5 + web_search
+  // research per company, opt-in via the "Deep Research" button since it's slower
+  // and has a real cost, unlike the fast default.
+  spinEl.querySelector('span:last-child').textContent = deep
+    ? t('personal.compare_deep_analyzing')
+    : t('personal.compare_analyzing');
   document.getElementById('compare-out').style.display = 'none';
   document.getElementById('compare-run-btn').style.display = 'none';
   try {
     const res = await fetch('/api/compare-companies', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ companies: S.companies, urls: S.urls, topics: S.topics, sectors: S.sectors })
+      body: JSON.stringify({ companies: S.companies, urls: S.urls, topics: S.topics, sectors: S.sectors, deep })
     });
     const data = await res.json();
     document.getElementById('compare-spin').style.display = 'none';
@@ -1386,7 +1394,7 @@ async function compareCompanies() {
       document.getElementById('compare-out').innerHTML = `<div style="color:#dc2626;font-family:Arial,sans-serif;font-size:13px;padding:8px 0">${data.error}</div>`;
       return;
     }
-    renderCompareResults(data.analysis, data.sources || {});
+    renderCompareResults(data.analysis, data.sources || {}, deep);
   } catch(e) {
     document.getElementById('compare-spin').style.display = 'none';
     document.getElementById('compare-out').style.display = '';
@@ -1394,11 +1402,22 @@ async function compareCompanies() {
   }
 }
 
-function renderCompareResults(analysis, sources) {
+function renderCompareResults(analysis, sources, isDeep = false) {
   const out = document.getElementById('compare-out');
   out.style.display = '';
   const riskClass = { High:'risk-high', Medium:'risk-medium', Low:'risk-low' };
   let html = '';
+
+  // Fast (default) results come from already-fetched SEC/court/news data via a single
+  // Haiku call — quick and cheap, but not as current or well-cited as deep research.
+  // Deep research (opt-in, real cost) runs live Sonnet 5 + web_search per company.
+  // Only offer the upgrade path when not already looking at a deep result.
+  html += isDeep
+    ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:.75rem;font-family:Arial,sans-serif;font-size:11px;font-weight:600;color:var(--gold)">${t('personal.compare_deep_badge')}</div>`
+    : `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:.75rem;flex-wrap:wrap">
+         <span style="font-family:Arial,sans-serif;font-size:11px;color:var(--ink3)">${t('personal.compare_fast_label')}</span>
+         <button class="btn-outline" style="font-size:11px;padding:5px 10px" onclick="compareCompanies(true)">${t('personal.compare_deep_btn')}</button>
+       </div>`;
 
   if (analysis.summary) {
     html += `<div style="font-family:Georgia,serif;font-size:14px;line-height:1.7;color:var(--ink2);margin-bottom:1.25rem;padding:12px 14px;background:var(--accent-light);border-left:3px solid var(--accent);border-radius:0 var(--radius) var(--radius) 0">${analysis.summary}</div>`;
@@ -1880,6 +1899,10 @@ const I18N = {
     'personal.refresh': 'Refresh',
     'personal.compare_hint': 'Add 2 or more companies in <strong>Sources & Topics → Tracked Companies</strong> to generate a competitive legal analysis.',
     'personal.compare_analyzing': 'Analyzing across SEC filings, court cases, and your news sources…',
+    'personal.compare_deep_analyzing': 'Running deep research — live web search per company, can take a couple minutes…',
+    'personal.compare_fast_label': '⚡ Quick comparison from your saved sources',
+    'personal.compare_deep_btn': '🔬 Deep Research (live web search, slower)',
+    'personal.compare_deep_badge': '🔬 Deep Research — live web search, current as of today',
     'personal.compare_note': 'Analysis draws from <strong>SEC EDGAR</strong> public filings, <strong>CourtListener</strong> federal cases, and your selected news sources. AI-synthesized — verify with primary sources.',
     'sharing.title': 'Share a thought',
     'sharing.compose_ph': 'Share an opinion or ask a question…',
@@ -2006,6 +2029,10 @@ const I18N = {
     'personal.refresh': '새로고침',
     'personal.compare_hint': 'Sources & Topics → Tracked Companies에서 2개 이상의 회사를 추가하면 경쟁사 법률 분석이 생성됩니다.',
     'personal.compare_analyzing': 'SEC 공시, 판례, 뉴스 소스를 분석하는 중…',
+    'personal.compare_deep_analyzing': '심층 조사 실행 중 — 회사별로 실시간 웹 검색을 진행하며, 몇 분 정도 걸릴 수 있습니다…',
+    'personal.compare_fast_label': '⚡ 저장된 소스 기반 빠른 비교',
+    'personal.compare_deep_btn': '🔬 심층 조사 (실시간 웹 검색, 느림)',
+    'personal.compare_deep_badge': '🔬 심층 조사 — 실시간 웹 검색, 오늘 기준 최신 정보',
     'personal.compare_note': '이 분석은 <strong>SEC EDGAR</strong> 공개 공시, <strong>CourtListener</strong> 연방 판례, 선택한 뉴스 소스를 기반으로 합니다. AI가 종합한 결과이니 원문으로 다시 확인하세요.',
     'sharing.title': '의견 남기기',
     'sharing.compose_ph': '의견이나 질문을 남겨보세요…',
@@ -2132,6 +2159,10 @@ const I18N = {
     'personal.refresh': 'Actualizar',
     'personal.compare_hint': 'Agrega 2 o más empresas en <strong>Fuentes y Temas → Empresas Seguidas</strong> para generar un análisis legal competitivo.',
     'personal.compare_analyzing': 'Analizando presentaciones de la SEC, casos judiciales y tus fuentes de noticias…',
+    'personal.compare_deep_analyzing': 'Ejecutando investigación profunda — búsqueda web en vivo por empresa, puede tardar un par de minutos…',
+    'personal.compare_fast_label': '⚡ Comparación rápida basada en tus fuentes guardadas',
+    'personal.compare_deep_btn': '🔬 Investigación Profunda (búsqueda web en vivo, más lenta)',
+    'personal.compare_deep_badge': '🔬 Investigación Profunda — búsqueda web en vivo, actualizada a hoy',
     'personal.compare_note': 'El análisis se basa en presentaciones públicas de <strong>SEC EDGAR</strong>, casos federales de <strong>CourtListener</strong> y tus fuentes de noticias seleccionadas. Generado por IA — verifica con fuentes primarias.',
     'sharing.title': 'Comparte una opinión',
     'sharing.compose_ph': 'Comparte una opinión o haz una pregunta…',
@@ -2258,6 +2289,10 @@ const I18N = {
     'personal.refresh': 'Actualiser',
     'personal.compare_hint': 'Ajoutez 2 entreprises ou plus dans <strong>Sources et Sujets → Entreprises Suivies</strong> pour générer une analyse juridique concurrentielle.',
     'personal.compare_analyzing': 'Analyse des dépôts SEC, des affaires judiciaires et de vos sources d\'actualités…',
+    'personal.compare_deep_analyzing': 'Recherche approfondie en cours — recherche web en direct par entreprise, peut prendre quelques minutes…',
+    'personal.compare_fast_label': '⚡ Comparaison rapide basée sur vos sources enregistrées',
+    'personal.compare_deep_btn': '🔬 Recherche Approfondie (recherche web en direct, plus lente)',
+    'personal.compare_deep_badge': '🔬 Recherche Approfondie — recherche web en direct, à jour',
     'personal.compare_note': "L'analyse s'appuie sur les dépôts publics <strong>SEC EDGAR</strong>, les affaires fédérales <strong>CourtListener</strong> et vos sources d'actualités sélectionnées. Synthétisé par IA — vérifiez avec des sources primaires.",
     'sharing.title': 'Partagez un avis',
     'sharing.compose_ph': 'Partagez un avis ou posez une question…',
@@ -2384,6 +2419,10 @@ const I18N = {
     'personal.refresh': '刷新',
     'personal.compare_hint': '在<strong>来源与主题 → 追踪公司</strong>中添加2家或以上公司，以生成竞争法律分析。',
     'personal.compare_analyzing': '正在分析SEC备案、法院案例和您的新闻来源…',
+    'personal.compare_deep_analyzing': '正在运行深度调查 — 针对每家公司进行实时网络搜索，可能需要几分钟…',
+    'personal.compare_fast_label': '⚡ 基于已保存来源的快速比较',
+    'personal.compare_deep_btn': '🔬 深度调查（实时网络搜索，速度较慢）',
+    'personal.compare_deep_badge': '🔬 深度调查 — 实时网络搜索，信息为当前最新',
     'personal.compare_note': '分析基于<strong>SEC EDGAR</strong>公开备案、<strong>CourtListener</strong>联邦案例和您所选的新闻来源。由AI综合生成——请通过原始来源核实。',
     'sharing.title': '分享一个观点',
     'sharing.compose_ph': '分享观点或提出问题…',
@@ -2510,6 +2549,10 @@ const I18N = {
     'personal.refresh': '更新',
     'personal.compare_hint': '<strong>ソース & トピック → 追跡中の企業</strong>で2社以上を追加すると、競合法務分析が生成されます。',
     'personal.compare_analyzing': 'SEC提出書類、判例、ニュースソースを分析中…',
+    'personal.compare_deep_analyzing': '詳細調査を実行中 — 各企業についてリアルタイムでウェブ検索を行うため、数分かかる場合があります…',
+    'personal.compare_fast_label': '⚡ 保存済みソースによるクイック比較',
+    'personal.compare_deep_btn': '🔬 詳細調査（リアルタイムウェブ検索、時間がかかります）',
+    'personal.compare_deep_badge': '🔬 詳細調査 — リアルタイムウェブ検索、本日時点の最新情報',
     'personal.compare_note': 'この分析は<strong>SEC EDGAR</strong>の公開書類、<strong>CourtListener</strong>の連邦判例、選択したニュースソースに基づいています。AIによる統合です — 一次情報でご確認ください。',
     'sharing.title': '意見を共有する',
     'sharing.compose_ph': '意見や質問を共有しましょう…',

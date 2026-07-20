@@ -605,17 +605,58 @@ async function researchCompareCompanyIntel(apiKey, company, ctx, activeTopicLabe
   }
 }
 
-// Competitive legal analysis: SEC EDGAR + CourtListener + user sources, plus per-company
-// jurisdiction research (parallel Sonnet 5 + web_search/web_fetch calls, one per company)
-// followed by a fast Haiku synthesis call that compares the already-gathered per-company
-// findings against each other. Splitting it this way bounds wall-clock time to roughly
-// one company's research instead of N companies researched serially in one long call.
+// Fast default path: one Haiku call, no tools, reasoning only over the news/case/SEC
+// data already gathered for free above — no live web search, so it finishes in
+// seconds and costs almost nothing. Added after repeated live testing showed prompt
+// tuning (effort, scope, max_uses) on the deep Sonnet 5 + web_search path couldn't
+// meet the user's speed/cost bar — the fix was making that expensive path opt-in
+// rather than trying to make it fast, which has a structural floor it can't beat.
+async function synthesizeFastComparison(apiKey, companies, ctxFor, activeTopics) {
+  const combinedCtx = `Companies to compare: ${companies.join(' vs. ')}\n\n` +
+    companies.map(co => `## ${co}\n${ctxFor(co)}`).join('\n');
+
+  const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 3000,
+      temperature: 0,
+      system: `You are a legal intelligence analyst. Given the pre-gathered news, court case, and SEC filing data below for each company, write a comparative legal analysis strictly within these topic areas: ${activeTopics.length ? activeTopics.join(', ') : 'general legal and regulatory matters'}. Base every claim only on the data given — do not invent facts or assume information you don't have here.
+If there is little or no data for a company, say so honestly in its fields (e.g. "No significant recent activity found in the available sources") rather than writing generic filler.
+Respond ONLY as valid JSON (no markdown fences): {"summary":"2-3 sentence overview","isCompetitors":true,"industryContext":"what industry/market they compete in","focusAreas":["topic area 1","topic area 2"],"companies":{"COMPANY_NAME":{"riskLevel":"High|Medium|Low|Unknown","keyRisks":["specific risk 1","risk 2"],"legalAdvantages":["advantage 1"],"recentDevelopments":["development 1"],"regulatoryExposure":"one sentence","citations":["https://... a real URL from the data above, or omit if none available"]}},"industryTrends":["trend 1","trend 2"],"comparativeVerdict":"which company has the stronger position and why, or that there isn't enough data to say","watchlist":["development to watch 1"]}`,
+      messages: [{ role: 'user', content: combinedCtx }]
+    }),
+    signal: AbortSignal.timeout(30000)
+  });
+
+  if (!claudeRes.ok) {
+    const errBody = await claudeRes.text().catch(() => '');
+    console.error('compare-companies fast-path error:', claudeRes.status, errBody);
+    throw new Error('Comparison failed.');
+  }
+  const data = await claudeRes.json();
+  const text = (data.content || []).map(b => b.text || '').join('').trim();
+  const m = text.match(/\{[\s\S]*\}/);
+  if (!m) {
+    console.error(`compare-companies fast-path no-JSON (stop_reason: ${data.stop_reason}):`, text.slice(0, 800));
+    throw new Error('Comparison returned no usable content.');
+  }
+  return JSON.parse(m[0]);
+}
+
+// Competitive legal analysis: SEC EDGAR + CourtListener + user sources, then either:
+// - fast path (default): one Haiku call over that data alone — seconds, near-free.
+// - deep path (deep:true, opt-in): per-company Sonnet 5 + web_search/web_fetch research
+//   (parallel, one per company) followed by a Haiku synthesis call. Slower and real
+//   cost, but current/cited. Both paths return the same {analysis, sources} shape so
+//   the client's rendering code doesn't need to know which one ran.
 app.post('/api/compare-companies', async (req, res) => {
-  if (!checkRateLimit(req.ip, 'compare-companies', 10)) {
+  const { companies = [], urls = [], topics = {}, sectors = {}, deep = false } = req.body;
+  if (!checkRateLimit(req.ip, deep ? 'compare-companies-deep' : 'compare-companies', deep ? 10 : 30)) {
     return res.status(429).json({ error: 'Too many comparison requests. Please try again later.' });
   }
 
-  const { companies = [], urls = [], topics = {}, sectors = {} } = req.body;
   if (companies.length < 2) return res.status(400).json({ error: 'Need at least 2 companies to compare.' });
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -678,11 +719,23 @@ app.post('/api/compare-companies', async (req, res) => {
     let ctx = `Analyze ${co} from a legal perspective, as one company being compared against: ${companies.filter(c=>c!==co).join(', ')}.\n\n`;
     if (activeTopics.length)  ctx += `FOCUS ONLY on these legal topic areas: ${activeTopics.join(', ')}. Do not analyse areas outside this scope.\n`;
     if (activeSectors.length) ctx += `Industry context: ${activeSectors.join(', ')}.\n`;
-    if (newsData[co]?.length) ctx += `Recent legal news:\n${newsData[co].map(a => `- ${a.title}`).join('\n')}\n`;
-    if (caseData[co]?.length) ctx += `Court cases:\n${caseData[co].map(c => `- ${c.title} (${c.court}, ${c.date}): ${c.snippet}`).join('\n')}\n`;
+    // Links included (not just titles) so a citations field can point at a real URL
+    // without needing a live web search to find one.
+    if (newsData[co]?.length) ctx += `Recent legal news:\n${newsData[co].map(a => `- ${a.title} (${a.link})`).join('\n')}\n`;
+    if (caseData[co]?.length) ctx += `Court cases:\n${caseData[co].map(c => `- ${c.title} (${c.court}, ${c.date}): ${c.snippet} (${c.url})`).join('\n')}\n`;
     if (secData[co]?.length)  ctx += `SEC filings:\n${secData[co].map(s => `- ${s.form} (${s.date}): ${s.company}`).join('\n')}\n`;
     return ctx;
   };
+
+  if (!deep) {
+    try {
+      const analysis = await synthesizeFastComparison(apiKey, companies, ctxFor, activeTopics);
+      res.json({ analysis, sources: { news: newsData, cases: caseData, sec: secData } });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+    return;
+  }
 
   try {
     const perCompanyResults = await Promise.all(
